@@ -33,6 +33,7 @@ scenario/       Scenario file format and the scripted caller that runs it
 vad/            Voice activity detection for caller clips and agent audio
 timeline/       Timestamped event log of a call
 metrics/        Time to first audio and interruption handling, from the timeline
+load/           Concurrent calls with ramp-up, per-call timeouts and cancellation
 ```
 
 ## Development
