@@ -28,6 +28,7 @@ cmd/callswarm/  CLI entry point
 audio/          WAV loading, μ-law codec, resampling, frame chunking
 twilio/         Twilio Media Streams protocol messages
 fakeagent/      Key-free echo agent with configurable timing, used as the test target
+transport/      Caller side of a Twilio Media Streams call: handshake, paced audio, playback
 ```
 
 ## Development
