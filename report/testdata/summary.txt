@@ -1,0 +1,23 @@
+callswarm v0.1.0 - demo
+4 calls, peak 4 concurrent, 12.3s against ws://localhost:8080/twilio
+health: HEALTHY
+
+Time to first audio
+  4 replies to 5 turns
+
+  calls active        p50      p90      p95      p99      max      n
+  all               510ms    900ms    900ms    900ms    900ms      4
+
+Interruptions
+  1 interruption: stopped within 1s in 1 (100%), sent clear in 1 (100%)
+  time talking over the caller: p50 210ms, p90 210ms, max 210ms (n=1)
+
+Caller pacing
+  0.20% of 2000 frames sent late, mean lateness 0.6ms, worst 12ms
+
+Warnings
+  - only 4 first-audio samples: p99 is close to the maximum and not a stable estimate.
+  - 1 of 4 calls failed; their completed steps are included.
+  - the agent never replied in 1 of 5 turns.
+
+scenario sha256:abc

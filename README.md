@@ -34,6 +34,8 @@ vad/            Voice activity detection for caller clips and agent audio
 timeline/       Timestamped event log of a call
 metrics/        Time to first audio and interruption handling, from the timeline
 load/           Concurrent calls with ramp-up, per-call timeouts and cancellation
+summary/        Latency percentiles, latency by load, and whether the run can be trusted
+report/         JSON report with a reproducibility manifest, and a plain-text summary
 ```
 
 ## Development
