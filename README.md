@@ -26,6 +26,8 @@ A Go library and CLI that plays the caller against a voice agent. It runs script
 ```
 cmd/callswarm/  CLI entry point
 audio/          WAV loading, μ-law codec, resampling, frame chunking
+twilio/         Twilio Media Streams protocol messages
+fakeagent/      Key-free echo agent with configurable timing, used as the test target
 ```
 
 ## Development
