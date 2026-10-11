@@ -1,0 +1,14 @@
+# Binaries
+/callswarm
+/dist/
+*.exe
+
+# Test and coverage output
+*.test
+*.out
+coverage.*
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store

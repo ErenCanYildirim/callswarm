@@ -1,2 +1,42 @@
 # callswarm
-A Go SDK for testing and load-simulating voice agents
+
+A Go library and CLI that plays the caller against a voice agent. It runs scripted conversations at scale and measures how the agent behaves, so you don't have to test by calling your agent yourself.
+
+## Scope
+
+- **Transport:** WebSocket audio streaming using the Twilio Media Streams protocol (μ-law, 8 kHz, 20 ms frames). Agent frameworks that accept phone calls through Twilio, such as Pipecat and Jargo, can be tested without changes.
+- **Scripted callers:** conversations built from pre-recorded audio files, pauses and interruption offsets.
+- **Load:** a concurrency runner that ramps up simultaneous sessions.
+- **Metrics:**
+  - *Time to first audio:* from the end of caller speech (detected by VAD on the caller's own audio) to the first non-silent agent audio.
+  - *Interruption handling:* caller audio injected at a set offset while the agent speaks; time until agent audio stops, and whether it stops at all within a timeout.
+  - *Latency distribution:* p50, p90, p99 and max per run, reported alongside the load generator's own pacing jitter.
+- **CI:** reproducible runs with threshold assertions and nonzero exit codes.
+
+## Non-goals (for now)
+
+- Phone network (SIP/PSTN) testing.
+- Synthetic caller voices (TTS-generated callers).
+- LLM-based judging of conversation quality.
+- Hosted service, dashboards or accounts.
+- WebRTC transports. A LiveKit transport may follow once the WebSocket path is solid.
+
+## Layout
+
+```
+cmd/callswarm/  CLI entry point
+audio/          WAV loading, μ-law codec, resampling, frame chunking
+```
+
+## Development
+
+Requires Go 1.24 or newer.
+
+```
+go test -race ./...
+golangci-lint run
+```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
