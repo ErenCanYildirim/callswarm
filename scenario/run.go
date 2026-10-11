@@ -113,7 +113,11 @@ func (r *runner) step(st Step, sr *StepResult) error {
 		if err := r.sleepUntil(seg.Start.Add(st.After)); err != nil {
 			return err
 		}
-		if now := r.mon.segmentAt(seg.Start, r.sc.ReplyGap); !now.End.After(time.Now()) {
+		// The agent counts as still speaking unless it has been silent for a
+		// full pause between words. Audio streamed in real time is only a
+		// frame or two ahead of now, so network or scheduling jitter leaves
+		// brief gaps that are not the end of its speech.
+		if now := r.mon.segmentAt(seg.Start, r.sc.ReplyGap); !time.Now().Before(now.End.Add(vadConfig.MinSilence)) {
 			return fmt.Errorf("agent stopped speaking after %v, before the %v interruption point",
 				now.End.Sub(now.Start).Round(time.Millisecond), st.After)
 		}

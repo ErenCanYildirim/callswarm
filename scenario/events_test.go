@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,8 @@ import (
 	"github.com/ErenCanYildirim/callswarm/fakeagent"
 	"github.com/ErenCanYildirim/callswarm/timeline"
 	"github.com/ErenCanYildirim/callswarm/transport"
+	"github.com/ErenCanYildirim/callswarm/twilio"
+	"github.com/coder/websocket"
 )
 
 // part is a piece of a test clip: tone or silence.
@@ -199,5 +203,98 @@ func TestMonitorSplitsLargeChunks(t *testing.T) {
 		if want := at.Add(time.Duration(i) * 20 * time.Millisecond); !f.PlayAt.Equal(want) || f.End.Sub(f.PlayAt) != 20*time.Millisecond {
 			t.Errorf("frame %d plays %v..%v", i, f.PlayAt.Sub(at), f.End.Sub(at))
 		}
+	}
+}
+
+// A clear ends agent speech for good: a reply that starts soon after it is a
+// separate segment, even if the gap is shorter than a pause between words.
+func TestClearSplitsAgentSpeech(t *testing.T) {
+	at := time.Now()
+	ms := func(n int) time.Time { return at.Add(time.Duration(n) * time.Millisecond) }
+	var a AgentAudio
+	for i := 0; i < 15; i++ { // 0-300 ms, cut off by the clear at 200 ms
+		f := AgentFrame{PlayAt: ms(i * 20), End: ms(i*20 + 20), Speech: true}
+		if i >= 10 {
+			f.Cleared = true
+		}
+		if f.End.After(ms(200)) {
+			f.End = ms(200)
+		}
+		a.Frames = append(a.Frames, f)
+	}
+	for i := 0; i < 10; i++ { // new reply 100 ms after the clear
+		a.Frames = append(a.Frames, AgentFrame{PlayAt: ms(300 + i*20), End: ms(320 + i*20), Speech: true})
+	}
+	a.Clears = []time.Time{ms(200)}
+
+	segs := a.Speech(vadConfig.MinSilence)
+	if len(segs) != 2 {
+		t.Fatalf("got %d segments, want 2: %v", len(segs), segs)
+	}
+	if !segs[0].End.Equal(ms(200)) || !segs[1].Start.Equal(ms(300)) {
+		t.Errorf("segments = %v..%v, %v..%v",
+			segs[0].Start.Sub(at), segs[0].End.Sub(at), segs[1].Start.Sub(at), segs[1].End.Sub(at))
+	}
+	// Without the clear, the 100 ms gap would be bridged.
+	a.Clears = nil
+	if n := len(a.Speech(vadConfig.MinSilence)); n != 1 {
+		t.Errorf("without a clear got %d segments, want 1", n)
+	}
+}
+
+// Agents on real networks deliver audio with gaps. A brief gap in the agent's
+// speech at the moment of a planned interruption is a pause, not the end of
+// its speech, and the interruption must still happen.
+func TestInterruptThroughDeliveryGap(t *testing.T) {
+	tone := make([]int16, audio.TelephonySampleRate) // 1 s
+	for i := range tone {
+		tone[i] = int16(8000 * math.Sin(2*math.Pi*1000*float64(i)/audio.TelephonySampleRate))
+	}
+	speech := audio.Frames(audio.MulawEncode(tone), audio.TelephonyFrameSamples)
+
+	// The agent speaks 200 ms, goes quiet for 140 ms (covering the 300 ms
+	// interruption point), then continues.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = ws.CloseNow() }()
+		ctx := r.Context()
+		go func() { // drain caller audio
+			for {
+				if _, _, err := ws.Read(ctx); err != nil {
+					return
+				}
+			}
+		}()
+		send := func(frames [][]byte) {
+			for _, f := range frames {
+				data, _ := twilio.Encode(twilio.AgentMedia("MZgap", f))
+				if err := ws.Write(ctx, websocket.MessageText, data); err != nil {
+					return
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+		send(speech[:10])
+		time.Sleep(340 * time.Millisecond)
+		send(speech[10:])
+		<-ctx.Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := transport.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), transport.Options{CallID: "gap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	sc := fixture(t, "reply_gap: 400ms\nsteps:\n  - interrupt: clips/tiny.wav\n    after: 300ms\n    wait: none\n")
+	res := Run(ctx, conn, sc)
+	if res.Err != nil {
+		t.Fatalf("interrupt failed during a 140 ms delivery gap: %v\n%s", res.Err, res.Timeline)
 	}
 }

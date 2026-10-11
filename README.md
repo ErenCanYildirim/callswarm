@@ -32,6 +32,7 @@ transport/      Caller side of a Twilio Media Streams call: handshake, paced aud
 scenario/       Scenario file format and the scripted caller that runs it
 vad/            Voice activity detection for caller clips and agent audio
 timeline/       Timestamped event log of a call
+metrics/        Time to first audio and interruption handling, from the timeline
 ```
 
 ## Development

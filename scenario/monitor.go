@@ -44,13 +44,20 @@ type AgentAudio struct {
 }
 
 // Speech groups the heard agent speech into segments, bridging gaps shorter
-// than minSilence.
+// than minSilence. A clear always ends a segment: speech after it is a new
+// one, however soon it follows.
 func (a AgentAudio) Speech(minSilence time.Duration) []Segment {
-	frames := make([]vad.Frame, 0, len(a.Frames))
+	var segs []Segment
+	var frames []vad.Frame
+	clears := a.Clears
 	for _, f := range a.Frames {
+		for len(clears) > 0 && !f.PlayAt.Before(clears[0]) {
+			segs = append(segs, vad.Merge(frames, vadConfig.MinSpeech, minSilence)...)
+			frames, clears = frames[:0], clears[1:]
+		}
 		frames = append(frames, vad.Frame{Start: f.PlayAt, End: f.End, Speech: f.Speech && !f.Cleared})
 	}
-	return vad.Merge(frames, vadConfig.MinSpeech, minSilence)
+	return append(segs, vad.Merge(frames, vadConfig.MinSpeech, minSilence)...)
 }
 
 // vadConfig is the voice activity detection used for caller clips and agent
