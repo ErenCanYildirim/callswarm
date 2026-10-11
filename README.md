@@ -19,11 +19,18 @@ A Go library and CLI that plays the caller against a voice agent. It runs script
 
 ## Usage
 
-Install with `go install github.com/ErenCanYildirim/callswarm/cmd/callswarm@latest`, then try it against the built-in fake agent:
+New here? [docs/quickstart.md](docs/quickstart.md) walks through installing, a first run, writing a scenario and pointing callswarm at your own agent. [docs/metrics.md](docs/metrics.md) defines every number in the report and lists known limitations.
+
+Install with `go install github.com/ErenCanYildirim/callswarm/cmd/callswarm@latest` (Go 1.26 or newer). Then start the built-in fake agent in one terminal:
 
 ```
-callswarm fake-agent &
-callswarm run scenario.yaml --url ws://127.0.0.1:8080 --calls 50 --concurrency 20 --ramp-up 10s --out report.json
+callswarm fake-agent
+```
+
+and run the example scenario against it from a second terminal, in the repository root:
+
+```
+callswarm run examples/smoke/scenario.yaml --url ws://127.0.0.1:8080 --calls 50 --concurrency 20 --ramp-up 10s --out report.json
 ```
 
 `run` prints a summary and, with `--out`, writes the full JSON report. Ctrl-C stops a run and still prints the report for the calls that started. Run `callswarm run -h` for all flags.
@@ -42,6 +49,11 @@ By default a run fails if any call fails (`--max-failed`) or if the test machine
 Exit codes: 0 all checks passed, 3 a check failed, 1 the run could not be carried out, 2 usage error, 130 cancelled.
 
 [`.github/workflows/smoke.yml`](.github/workflows/smoke.yml) runs [`examples/smoke`](examples/smoke) against the fake agent on every push, and is written to be copied for your own agent.
+
+### Docs
+
+- [Quickstart](docs/quickstart.md): install, first run, the scenario format, and pointing callswarm at your agent.
+- [Metrics](docs/metrics.md): what each number means, how health and checks work, and known limitations.
 
 ### Agent frameworks
 
@@ -78,7 +90,7 @@ fakeagent/               Key-free echo agent with configurable timing, used as t
 fakeagent/livekitagent/  The same fake agent, joining LiveKit rooms
 examples/                Example scenarios
 bench/                   Pipecat and Jargo bots, their containers and the scenario for the framework benchmark
-docs/                    Framework setup notes and benchmark results
+docs/                    Quickstart, metric definitions, framework setup notes and benchmark results
 ```
 
 ## Development
