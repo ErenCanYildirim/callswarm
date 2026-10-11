@@ -102,17 +102,21 @@ func TestRunRejectsBadFlags(t *testing.T) {
 		args []string
 		want string
 	}{
-		"no scenario":   {[]string{"run", "--url", "ws://x"}, "missing scenario"},
-		"two scenarios": {[]string{"run", sc, sc, "--url", "ws://x"}, "expected one scenario"},
-		"no url":        {[]string{"run", sc}, "--url is required"},
-		"http url":      {[]string{"run", sc, "--url", "http://localhost:8080/x"}, "did you mean ws://localhost:8080/x"},
-		"other scheme":  {[]string{"run", sc, "--url", "ftp://x"}, "ws:// or wss://"},
-		"zero calls":    {[]string{"run", sc, "--url", "ws://x", "--calls", "0"}, "--calls"},
-		"bad format":    {[]string{"run", sc, "--url", "ws://x", "--format", "xml"}, "--format"},
-		"bad header":    {[]string{"run", sc, "--url", "ws://x", "--header", "NoColon"}, "Name: value"},
-		"bad param":     {[]string{"run", sc, "--url", "ws://x", "--param", "novalue"}, "key=value"},
-		"unknown flag":  {[]string{"run", sc, "--url", "ws://x", "--speed", "2"}, "speed"},
-		"negative ramp": {[]string{"run", sc, "--url", "ws://x", "--ramp-up", "-1s"}, "--ramp-up"},
+		"no scenario":    {[]string{"run", "--url", "ws://x"}, "missing scenario"},
+		"two scenarios":  {[]string{"run", sc, sc, "--url", "ws://x"}, "expected one scenario"},
+		"no url":         {[]string{"run", sc}, "--url is required"},
+		"http url":       {[]string{"run", sc, "--url", "http://localhost:8080/x"}, "did you mean ws://localhost:8080/x"},
+		"other scheme":   {[]string{"run", sc, "--url", "ftp://x"}, "ws:// or wss://"},
+		"zero calls":     {[]string{"run", sc, "--url", "ws://x", "--calls", "0"}, "--calls"},
+		"bad format":     {[]string{"run", sc, "--url", "ws://x", "--format", "xml"}, "--format"},
+		"bad header":     {[]string{"run", sc, "--url", "ws://x", "--header", "NoColon"}, "Name: value"},
+		"bad param":      {[]string{"run", sc, "--url", "ws://x", "--param", "novalue"}, "key=value"},
+		"unknown flag":   {[]string{"run", sc, "--url", "ws://x", "--speed", "2"}, "speed"},
+		"negative ramp":  {[]string{"run", sc, "--url", "ws://x", "--ramp-up", "-1s"}, "--ramp-up"},
+		"bad limit":      {[]string{"run", sc, "--url", "ws://x", "--max-first-audio", "p97=1s"}, "unknown statistic"},
+		"bad fail-on":    {[]string{"run", sc, "--url", "ws://x", "--fail-on", "sometimes"}, "--fail-on"},
+		"bad rate":       {[]string{"run", sc, "--url", "ws://x", "--min-reply-rate", "95"}, "--min-reply-rate"},
+		"bad max-failed": {[]string{"run", sc, "--url", "ws://x", "--max-failed", "-2"}, "--max-failed"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			code, _, stderr := run(t, ctx, tc.args...)
@@ -136,14 +140,14 @@ func TestRunTextAndJSONFile(t *testing.T) {
 
 	// Flags after the positional argument work too.
 	code, stdout, stderr := run(t, context.Background(), "run", sc,
-		"--url", url+"?token=secret", "--calls", "4", "--concurrency", "2", "--out", out, "--quiet")
+		"--url", url+"?token=secret", "--calls", "4", "--concurrency", "2", "--out", out, "--quiet", "--fail-on", "never")
 	if code != ExitOK {
 		t.Fatalf("exit %d\nstderr: %s", code, stderr)
 	}
 	if stderr != "" {
 		t.Errorf("--quiet still wrote to stderr: %q", stderr)
 	}
-	for _, want := range []string{"callswarm v-test - cli-test", "4 calls, peak 2 concurrent", "health: HEALTHY", "4 replies to 4 turns"} {
+	for _, want := range []string{"callswarm v-test - cli-test", "4 calls, peak 2 concurrent", "health: ", "4 replies to 4 turns"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("text output missing %q:\n%s", want, stdout)
 		}
@@ -168,7 +172,7 @@ func TestRunTextAndJSONFile(t *testing.T) {
 func TestRunJSONToStdout(t *testing.T) {
 	url := agentURL(t, fakeagent.Config{EndpointSilence: 200 * time.Millisecond, Burst: true})
 	sc := writeScenario(t, "  - say: hello.wav\n")
-	code, stdout, stderr := run(t, context.Background(), "run", "--url", url, "--format", "json", "--timelines=false", sc)
+	code, stdout, stderr := run(t, context.Background(), "run", "--url", url, "--format", "json", "--timelines=false", "--fail-on", "never", sc)
 	if code != ExitOK {
 		t.Fatalf("exit %d\nstderr: %s", code, stderr)
 	}
@@ -227,7 +231,7 @@ func TestFakeAgentCommandEndToEnd(t *testing.T) {
 	}
 
 	sc := writeScenario(t, "  - say: hello.wav\n  - say: hello.wav\n")
-	code, stdout, stderr := run(t, context.Background(), "run", sc, "--url", url, "--calls", "3", "--concurrency", "3", "--format", "json", "--quiet")
+	code, stdout, stderr := run(t, context.Background(), "run", sc, "--url", url, "--calls", "3", "--concurrency", "3", "--format", "json", "--quiet", "--fail-on", "never")
 	if code != ExitOK {
 		t.Fatalf("run exit %d: %s", code, stderr)
 	}
@@ -248,5 +252,66 @@ func TestFakeAgentCommandEndToEnd(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("fake agent did not shut down")
+	}
+}
+
+func TestRunChecks(t *testing.T) {
+	// True first audio is 200ms: the endpoint silence, with no extra delay.
+	url := agentURL(t, fakeagent.Config{EndpointSilence: 200 * time.Millisecond, Burst: true})
+	sc := writeScenario(t, "  - say: hello.wav\n")
+	ctx := context.Background()
+	// Health is left out: a busy test machine could make it flaky, and
+	// TestRunFailedCalls covers the default checks.
+	base := []string{"run", sc, "--url", url, "--quiet", "--fail-on", "never"}
+
+	code, stdout, stderr := run(t, ctx, append(base, "--calls", "2", "--max-first-audio", "p95=1s", "--min-reply-rate", "1")...)
+	if code != ExitOK {
+		t.Fatalf("passing checks: exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Checks: all 3 passed") {
+		t.Errorf("passing checks not reported:\n%s", stdout)
+	}
+
+	code, stdout, stderr = run(t, ctx, append(base, "--calls", "2", "--max-first-audio", "p95=1s", "--max-first-audio", "p50=50ms")...)
+	if code != ExitCheckFailed {
+		t.Fatalf("failing check: exit %d, want %d\nstderr: %s", code, ExitCheckFailed, stderr)
+	}
+	if !regexp.MustCompile(`FAIL  first audio p50  [12]\d\d(\.\d)?ms \(n=2\), want at most 50ms`).MatchString(stdout) || !strings.Contains(stdout, "ok    first audio p95") {
+		t.Errorf("check table:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "1 of 3 checks failed") {
+		t.Errorf("stderr does not explain the exit code: %q", stderr)
+	}
+
+	// JSON output carries the same results.
+	code, stdout, _ = run(t, ctx, append(base, "--format", "json", "--max-first-audio", "p50=50ms")...)
+	var doc report.Document
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if code != ExitCheckFailed || doc.Checks == nil || doc.Checks.Passed || doc.Checks.Failed != 1 || len(doc.Checks.Results) != 2 {
+		t.Errorf("exit %d, checks %+v", code, doc.Checks)
+	}
+}
+
+// Failed calls fail the run by default; --max-failed -1 allows them.
+func TestRunFailedCalls(t *testing.T) {
+	srv := httptest.NewServer(fakeagent.New(fakeagent.Config{}))
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+	srv.Close() // nothing listens any more
+	sc := writeScenario(t, "  - say: hello.wav\n")
+	ctx := context.Background()
+
+	code, stdout, stderr := run(t, ctx, "run", sc, "--url", url, "--calls", "2", "--quiet")
+	if code != ExitCheckFailed {
+		t.Fatalf("exit %d, want %d\nstderr: %s", code, ExitCheckFailed, stderr)
+	}
+	if !strings.Contains(stdout, "FAIL  failed calls  2 of 2, want at most 0") {
+		t.Errorf("check table:\n%s", stdout)
+	}
+
+	code, stdout, stderr = run(t, ctx, "run", sc, "--url", url, "--calls", "2", "--quiet", "--max-failed", "-1", "--fail-on", "never")
+	if code != ExitOK || strings.Contains(stdout, "Checks") {
+		t.Errorf("checks disabled: exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
 }

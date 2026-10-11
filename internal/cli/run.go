@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ErenCanYildirim/callswarm/check"
 	"github.com/ErenCanYildirim/callswarm/load"
 	"github.com/ErenCanYildirim/callswarm/metrics"
 	"github.com/ErenCanYildirim/callswarm/report"
@@ -39,6 +40,20 @@ func (f *headerFlag) Set(v string) error {
 		f.h = http.Header{}
 	}
 	f.h.Add(name, strings.TrimSpace(value))
+	return nil
+}
+
+// limitFlag collects repeated stat=duration limits.
+type limitFlag struct{ limits []check.Limit }
+
+func (f *limitFlag) String() string { return "" }
+
+func (f *limitFlag) Set(v string) error {
+	l, err := check.ParseLimit(v)
+	if err != nil {
+		return err
+	}
+	f.limits = append(f.limits, l)
 	return nil
 }
 
@@ -72,6 +87,13 @@ type runOptions struct {
 	out         string
 	timelines   bool
 	quiet       bool
+
+	maxFailed      int
+	failOn         string
+	maxFirstAudio  limitFlag
+	maxStopLatency limitFlag
+	minReplyRate   float64
+	minStopRate    float64
 }
 
 func runCommand(ctx context.Context, args []string, version string, stdout, stderr io.Writer) int {
@@ -90,20 +112,41 @@ func runCommand(ctx context.Context, args []string, version string, stdout, stde
 	fs.StringVar(&o.out, "out", "", "also write the JSON report to this file")
 	fs.BoolVar(&o.timelines, "timelines", true, "include each call's event timeline in JSON output")
 	fs.BoolVar(&o.quiet, "quiet", false, "don't print progress to stderr")
+	fs.IntVar(&o.maxFailed, "max-failed", 0, "check: most calls allowed to fail, -1 for any")
+	fs.StringVar(&o.failOn, "fail-on", "unreliable", "check: fail when health is this bad: degraded, unreliable or never")
+	fs.Var(&o.maxFirstAudio, "max-first-audio", "check: limit on time to first audio, such as p95=800ms (repeatable; mean, p50, p90, p95, p99, max)")
+	fs.Var(&o.maxStopLatency, "max-stop-latency", "check: limit on time the agent talks over an interruption, such as p90=400ms (repeatable)")
+	fs.Float64Var(&o.minReplyRate, "min-reply-rate", 0, "check: share of turns the agent must answer, 0 to 1 (0 disables)")
+	fs.Float64Var(&o.minStopRate, "min-stop-rate", 0, "check: share of interruptions the agent must stop for within --stop-within, 0 to 1 (0 disables)")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(fs.Output(), "Usage: callswarm run <scenario.yaml> --url <ws-url> [flags]\n\nFlags:\n")
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: callswarm run <scenario.yaml> --url <ws-url> [flags]\n\n"+
+			"Exits 0 when every check passes, 3 when a check fails, 1 when the run\n"+
+			"could not be carried out, 2 on a usage error and 130 when cancelled.\n"+
+			"By default a run fails if any call fails or its health is unreliable.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 
 	err := doRun(ctx, fs, args, &o, version, stdout, stderr)
-	if errors.Is(err, errCancelled) {
+	var cf checksFailed
+	switch {
+	case errors.Is(err, errCancelled):
 		return ExitCancelled
+	case errors.As(err, &cf):
+		_, _ = fmt.Fprintf(stderr, "callswarm run: %s\n", cf)
+		return ExitCheckFailed
 	}
 	return exitCode(err, "run", stderr)
 }
 
 // errCancelled marks a run stopped by the user after its report was written.
 var errCancelled = errors.New("cancelled")
+
+// checksFailed marks a completed run that did not meet its criteria.
+type checksFailed struct{ failed, total int }
+
+func (e checksFailed) Error() string {
+	return fmt.Sprintf("%d of %d checks failed", e.failed, e.total)
+}
 
 func doRun(ctx context.Context, fs *flag.FlagSet, args []string, o *runOptions, version string, stdout, stderr io.Writer) error {
 	positional, err := parseInterleaved(fs, args)
@@ -116,6 +159,7 @@ func doRun(ctx context.Context, fs *flag.FlagSet, args []string, o *runOptions, 
 	if err := o.validate(positional); err != nil {
 		return err
 	}
+	criteria := o.criteria()
 
 	sc, err := scenario.Load(positional[0])
 	if err != nil {
@@ -154,7 +198,11 @@ func doRun(ctx context.Context, fs *flag.FlagSet, args []string, o *runOptions, 
 	th := summary.Thresholds{}
 	sum := summary.Summarize(rep, th)
 	man := report.NewManifest(resolveVersion(version), plan, th)
-	doc := report.Build(rep, sum, man, report.Options{Timelines: o.timelines})
+	results := check.Evaluate(sum, criteria)
+	if results == nil {
+		results = []check.Result{}
+	}
+	doc := report.Build(rep, sum, man, report.Options{Timelines: o.timelines, Checks: results})
 
 	if o.out != "" {
 		if err := writeFile(o.out, doc); err != nil {
@@ -166,6 +214,9 @@ func doRun(ctx context.Context, fs *flag.FlagSet, args []string, o *runOptions, 
 		err = report.WriteJSON(stdout, doc)
 	default:
 		err = report.WriteText(stdout, sum, man)
+		if err == nil {
+			err = report.WriteChecks(stdout, results)
+		}
 	}
 	if err != nil {
 		return err
@@ -177,7 +228,25 @@ func doRun(ctx context.Context, fs *flag.FlagSet, args []string, o *runOptions, 
 		_, _ = fmt.Fprintln(stderr, "run cancelled: the report covers the calls that started")
 		return errCancelled
 	}
+	if n := check.Failed(results); n > 0 {
+		return checksFailed{n, len(results)}
+	}
 	return nil
+}
+
+// criteria assembles the checks from validated flags.
+func (o *runOptions) criteria() check.Criteria {
+	c := check.Criteria{
+		MaxFailed:    o.maxFailed,
+		FirstAudio:   o.maxFirstAudio.limits,
+		StopLatency:  o.maxStopLatency.limits,
+		MinReplyRate: o.minReplyRate,
+		MinStopRate:  o.minStopRate,
+	}
+	if o.failOn != "never" {
+		c.FailOn = summary.Health(o.failOn)
+	}
+	return c
 }
 
 func (o *runOptions) validate(positional []string) error {
@@ -200,6 +269,14 @@ func (o *runOptions) validate(positional []string) error {
 		return usageErrorf("--stop-within must be positive")
 	case o.format != "text" && o.format != "json":
 		return usageErrorf("--format must be text or json, got %q", o.format)
+	case o.maxFailed < -1:
+		return usageErrorf("--max-failed must be -1 or more")
+	case o.failOn != "never" && o.failOn != string(summary.Degraded) && o.failOn != string(summary.Unreliable):
+		return usageErrorf("--fail-on must be degraded, unreliable or never, got %q", o.failOn)
+	case o.minReplyRate < 0 || o.minReplyRate > 1:
+		return usageErrorf("--min-reply-rate must be between 0 and 1")
+	case o.minStopRate < 0 || o.minStopRate > 1:
+		return usageErrorf("--min-stop-rate must be between 0 and 1")
 	}
 	u, err := url.Parse(o.url)
 	if err != nil {

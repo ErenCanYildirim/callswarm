@@ -21,6 +21,18 @@ jobs:
       - name: Test
         run: go test -race -count=1 ./...
 
+  # Windows timers are coarser (about 15.6 ms by default) and have caught
+  # timing bugs that Linux did not. No race detector here: it needs cgo.
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test -count=1 ./...
+
   lint:
     runs-on: ubuntu-latest
     steps:

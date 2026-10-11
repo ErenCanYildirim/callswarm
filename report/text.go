@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ErenCanYildirim/callswarm/check"
 	"github.com/ErenCanYildirim/callswarm/summary"
 )
 
@@ -73,6 +74,33 @@ func WriteText(w io.Writer, s summary.Summary, m Manifest) error {
 	}
 
 	p("\nscenario %s\n", m.ScenarioDigest)
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+// WriteChecks writes check results as a table, failures marked.
+func WriteChecks(w io.Writer, results []check.Result) error {
+	if len(results) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	failed := check.Failed(results)
+	if failed == 0 {
+		fmt.Fprintf(&b, "\nChecks: all %d passed\n", len(results))
+	} else {
+		fmt.Fprintf(&b, "\nChecks: %d of %d failed\n", failed, len(results))
+	}
+	width := 0
+	for _, r := range results {
+		width = max(width, len(r.Name))
+	}
+	for _, r := range results {
+		mark := "ok  "
+		if !r.Passed {
+			mark = "FAIL"
+		}
+		fmt.Fprintf(&b, "  %s  %-*s  %s, want %s\n", mark, width, r.Name, r.Actual, r.Limit)
+	}
 	_, err := io.WriteString(w, b.String())
 	return err
 }

@@ -1,0 +1,61 @@
+# Runs callswarm against its own fake agent and fails the build when the
+# agent misses its latency or interruption checks.
+#
+# To test your own agent, replace the "Start the agent" step with whatever
+# starts it, point --url at it, use a scenario with real recorded speech,
+# and set limits from a few runs of your agent rather than these.
+#
+# callswarm run exits 0 when every check passes, 3 when one fails, 1 when
+# the run could not be carried out and 2 on a usage error. Any call failing,
+# or the test machine being too overloaded to trust the numbers, fails the
+# run by default.
+name: Smoke test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build -o callswarm ./cmd/callswarm
+
+      - name: Start the agent
+        run: |
+          ./callswarm fake-agent --addr 127.0.0.1:8080 > agent.log 2>&1 &
+          timeout 10 bash -c 'until echo > /dev/tcp/127.0.0.1/8080; do sleep 0.1; done' 2>/dev/null
+
+      # The fake agent answers 500 ms after the caller stops (300 ms of
+      # silence to end the turn plus a 200 ms delay) and stops within about
+      # 60 ms when interrupted. The limits leave room for a shared runner.
+      - name: Run callswarm
+        run: |
+          ./callswarm run examples/smoke/scenario.yaml \
+            --url ws://127.0.0.1:8080 \
+            --calls 20 --concurrency 10 --ramp-up 2s \
+            --max-first-audio p95=700ms \
+            --max-stop-latency p95=300ms \
+            --min-reply-rate 1 \
+            --min-stop-rate 1 \
+            --out report.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: callswarm-report
+          path: |
+            report.json
+            agent.log
+          if-no-files-found: ignore

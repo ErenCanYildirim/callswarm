@@ -13,10 +13,11 @@ import (
 
 // Exit codes.
 const (
-	ExitOK        = 0
-	ExitFailure   = 1   // the run could not be carried out
-	ExitUsage     = 2   // bad command line
-	ExitCancelled = 130 // interrupted, as shells report for Ctrl-C
+	ExitOK          = 0
+	ExitFailure     = 1   // the run could not be carried out
+	ExitUsage       = 2   // bad command line
+	ExitCheckFailed = 3   // the run finished but did not meet its checks
+	ExitCancelled   = 130 // interrupted, as shells report for Ctrl-C
 )
 
 const usage = `callswarm plays the caller against a voice agent: it runs scripted

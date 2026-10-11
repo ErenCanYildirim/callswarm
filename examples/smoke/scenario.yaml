@@ -1,0 +1,23 @@
+# A short conversation for checking that callswarm and an agent work end to
+# end, used by the smoke test workflow against the fake agent.
+#
+# tone.wav is six 250 ms tone bursts with 80 ms gaps, about two seconds in
+# all: a rough stand-in for syllables that is enough for the fake agent,
+# which echoes whatever it hears. A real agent's speech recognizer needs
+# real recorded speech. A single steady tone would not do either: the voice
+# activity detector treats a steady sound longer than two seconds as
+# background noise.
+#
+# The clip is long on purpose. The fake agent echoes it back, so its reply
+# also lasts about two seconds; an agent that ignores the interruption at
+# 400 ms keeps talking for 1.5 s, longer than the default --stop-within of
+# 1s, and the interruption check catches it. With a reply shorter than that,
+# an agent that simply finished its sentence would pass as if it had stopped.
+name: smoke
+reply_gap: 500ms
+steps:
+  - say: tone.wav          # first audio is measured from the end of this
+  - say: tone.wav
+    wait: none             # don't wait for the reply...
+  - interrupt: tone.wav    # ...talk over it 400 ms after it starts
+    after: 400ms

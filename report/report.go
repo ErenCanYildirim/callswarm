@@ -12,6 +12,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/ErenCanYildirim/callswarm/check"
 	"github.com/ErenCanYildirim/callswarm/load"
 	"github.com/ErenCanYildirim/callswarm/summary"
 	"github.com/ErenCanYildirim/callswarm/timeline"
@@ -25,6 +26,8 @@ type Options struct {
 	// Timelines includes every call's event log. They are the best way to
 	// investigate an odd number, at roughly 3 KB per call.
 	Timelines bool
+	// Checks are pass/fail results to include. Nil leaves them out.
+	Checks []check.Result
 }
 
 // Document is the JSON report.
@@ -33,7 +36,14 @@ type Document struct {
 	StartedAt     time.Time   `json:"started_at"`
 	Manifest      Manifest    `json:"manifest"`
 	Summary       jsonSummary `json:"summary"`
+	Checks        *jsonChecks `json:"checks,omitempty"`
 	Calls         []jsonCall  `json:"calls"`
+}
+
+type jsonChecks struct {
+	Passed  bool           `json:"passed"`
+	Failed  int            `json:"failed"`
+	Results []check.Result `json:"results"`
 }
 
 type jsonDist struct {
@@ -140,6 +150,10 @@ func Build(rep *load.Report, s summary.Summary, m Manifest, opts Options) Docume
 			Pacing: pacing(s.Pacing.FramesSent, s.Pacing.LateFrames, s.Pacing.LateRatio, s.Pacing.MeanLateness, s.Pacing.MaxLateness),
 		},
 		Calls: []jsonCall{},
+	}
+	if opts.Checks != nil {
+		failed := check.Failed(opts.Checks)
+		doc.Checks = &jsonChecks{Passed: failed == 0, Failed: failed, Results: opts.Checks}
 	}
 	for _, b := range s.ByConcurrency {
 		doc.Summary.ByConcurrency = append(doc.Summary.ByConcurrency, jsonBucket{b.MinActive, b.MaxActive, dist(b.FirstAudio)})

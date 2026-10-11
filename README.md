@@ -2,6 +2,8 @@
 
 A Go library and CLI that plays the caller against a voice agent. It runs scripted conversations at scale and measures how the agent behaves, so you don't have to test by calling your agent yourself.
 
+> Status: early development. Nothing here is stable yet.
+
 ## Scope
 
 - **Transport:** WebSocket audio streaming using the Twilio Media Streams protocol (μ-law, 8 kHz, 20 ms frames). Agent frameworks that accept phone calls through Twilio, such as Pipecat and Jargo, can be tested without changes.
@@ -24,7 +26,22 @@ callswarm run scenario.yaml --url ws://127.0.0.1:8080 --calls 50 --concurrency 2
 
 `run` prints a summary and, with `--out`, writes the full JSON report. Ctrl-C stops a run and still prints the report for the calls that started. Run `callswarm run -h` for all flags.
 
-## Not included for now
+### In CI
+
+`run` checks the results and exits nonzero when a check fails, so it can gate a pipeline:
+
+```
+callswarm run scenario.yaml --url ws://127.0.0.1:8080 --calls 20 --concurrency 10 \
+  --max-first-audio p95=700ms --max-stop-latency p95=300ms --min-reply-rate 1 --min-stop-rate 1
+```
+
+By default a run fails if any call fails (`--max-failed`) or if the test machine was too overloaded for its numbers to be trusted (`--fail-on unreliable`). Latency limits take `mean`, `p50`, `p90`, `p95`, `p99` or `max`. A limit with nothing to measure, such as an interruption check on a scenario without interruptions, fails rather than passes.
+
+Exit codes: 0 all checks passed, 3 a check failed, 1 the run could not be carried out, 2 usage error, 130 cancelled.
+
+[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml) runs [`examples/smoke`](examples/smoke) against the fake agent on every push, and is written to be copied for your own agent.
+
+## Not included
 
 - Phone network (SIP/PSTN) testing.
 - Synthetic caller voices (TTS-generated callers).
@@ -38,7 +55,6 @@ callswarm run scenario.yaml --url ws://127.0.0.1:8080 --calls 50 --concurrency 2
 cmd/callswarm/  CLI entry point
 audio/          WAV loading, μ-law codec, resampling, frame chunking
 twilio/         Twilio Media Streams protocol messages
-fakeagent/      Key-free echo agent with configurable timing, used as the test target
 transport/      Caller side of a Twilio Media Streams call: handshake, paced audio, playback
 scenario/       Scenario file format and the scripted caller that runs it
 vad/            Voice activity detection for caller clips and agent audio
@@ -46,8 +62,11 @@ timeline/       Timestamped event log of a call
 metrics/        Time to first audio and interruption handling, from the timeline
 load/           Concurrent calls with ramp-up, per-call timeouts and cancellation
 summary/        Latency percentiles, latency by load, and whether the run can be trusted
+check/          Pass/fail checks on a run summary, for CI
 report/         JSON report with a reproducibility manifest, and a plain-text summary
 internal/cli/   Command-line interface
+fakeagent/      Key-free echo agent with configurable timing, used as the test target
+examples/       Example scenarios
 ```
 
 ## Development
