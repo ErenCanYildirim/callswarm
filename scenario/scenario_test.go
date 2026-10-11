@@ -283,3 +283,41 @@ func TestRunStopsWhenCallEnds(t *testing.T) {
 		t.Error("run kept going after the call ended")
 	}
 }
+
+// After an interruption, wait: reply waits for the answer to what the caller
+// said, not for the speech the caller cut into.
+func TestInterruptWaitsForNewReply(t *testing.T) {
+	cfg := fakeagent.Config{EndpointSilence: 300 * time.Millisecond, BargeIn: true}
+	conn := startCall(t, cfg)
+	sc := fixture(t, `
+reply_gap: 400ms
+steps:
+  - say: clips/long.wav
+    wait: none
+  - interrupt: clips/short.wav
+    after: 300ms
+    wait: reply
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	res := Run(ctx, conn, sc)
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	in := res.Steps[1]
+	var answer *Segment
+	for _, s := range res.Agent.Speech(sc.ReplyGap) {
+		if s.Start.After(in.Caller.Began) {
+			answer = &s
+			break
+		}
+	}
+	if answer == nil {
+		t.Fatal("the agent never answered the interruption")
+	}
+	if in.Ended.Before(answer.End) {
+		t.Errorf("interrupt step ended %v before the answer finished",
+			answer.End.Sub(in.Ended).Round(time.Millisecond))
+	}
+	within(t, "answer delay", answer.Start.Sub(in.Caller.Ended), cfg.ExpectedFirstAudio())
+}

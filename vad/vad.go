@@ -124,6 +124,17 @@ func (c *Classifier) Speech(frame []int16) bool {
 	return level >= c.cfg.MinLevel && level >= c.Noise()+c.cfg.Margin
 }
 
+// Silence records d of silence heard without any frames to classify, such
+// as the gaps in a stream that only carries audio while someone talks, so
+// the noise estimate reflects what the listener heard. Gaps longer than the
+// noise window count as a full window.
+func (c *Classifier) Silence(d time.Duration) {
+	for range min(int(d/FrameDuration), len(c.levels)) {
+		c.levels[c.next] = silenceLevel
+		c.next = (c.next + 1) % len(c.levels)
+	}
+}
+
 // Noise is the current background noise estimate in dBFS: the quietest
 // frame in the window, including the latest.
 func (c *Classifier) Noise() float64 {

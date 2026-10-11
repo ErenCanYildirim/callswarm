@@ -8,7 +8,17 @@
 *.out
 coverage.*
 
+# Python
+.venv/
+__pycache__/
+
 # Editors and OS
 .idea/
 .vscode/
 .DS_Store
+
+.env
+venv/
+.venv/
+
+report.json

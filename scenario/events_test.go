@@ -298,3 +298,36 @@ func TestInterruptThroughDeliveryGap(t *testing.T) {
 		t.Fatalf("interrupt failed during a 140 ms delivery gap: %v\n%s", res.Err, res.Timeline)
 	}
 }
+
+// Agents send nothing between replies, and the caller hears silence then.
+// The noise floor has to count that silence: if it only saw the audio the
+// agent sent, a long, steady reply would become the background, and the
+// next reply would not be detected as speech at all.
+func TestMonitorCountsSilenceBetweenReplies(t *testing.T) {
+	tone := func(d time.Duration) []byte {
+		pcm := make([]int16, int(d.Seconds()*audio.TelephonySampleRate))
+		for i := range pcm {
+			pcm[i] = int16(8000 * math.Sin(2*math.Pi*440*float64(i)/audio.TelephonySampleRate))
+		}
+		return audio.MulawEncode(pcm)
+	}
+	in := make(chan transport.Inbound, 2)
+	m := newMonitor(in)
+	at := time.Now()
+	in <- transport.Inbound{Kind: transport.KindAudio, At: at, PlayAt: at, Audio: tone(3 * time.Second)}
+	second := at.Add(5 * time.Second) // two seconds of nothing after the first reply
+	in <- transport.Inbound{Kind: transport.KindAudio, At: second, PlayAt: second, Audio: tone(time.Second)}
+	close(in)
+
+	deadline := time.Now().Add(time.Second)
+	for len(m.snapshot().Frames) < 200 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	segs := m.segments(vadConfig.MinSilence)
+	if len(segs) != 2 || !segs[1].Start.Equal(second) {
+		for _, s := range segs {
+			t.Logf("segment %v..%v", s.Start.Sub(at), s.End.Sub(at))
+		}
+		t.Fatalf("got %d segments, want the second reply detected at 5s", len(segs))
+	}
+}

@@ -70,6 +70,9 @@ type monitor struct {
 	mu    sync.Mutex
 	agent AgentAudio
 	vad   *vad.Classifier
+	// heardUntil is when the audio the classifier has seen stops playing;
+	// any time after it, until the next audio, the caller heard silence.
+	heardUntil time.Time
 }
 
 func newMonitor(in <-chan transport.Inbound) *monitor {
@@ -77,7 +80,6 @@ func newMonitor(in <-chan transport.Inbound) *monitor {
 	go m.run(in)
 	return m
 }
-
 func (m *monitor) run(in <-chan transport.Inbound) {
 	for msg := range in {
 		m.mu.Lock()
@@ -86,6 +88,9 @@ func (m *monitor) run(in <-chan transport.Inbound) {
 			m.addAudio(msg)
 		case transport.KindClear:
 			m.agent.Clears = append(m.agent.Clears, msg.At)
+			if m.heardUntil.After(msg.At) {
+				m.heardUntil = msg.At // the rest was discarded unheard
+			}
 			for i := range m.agent.Frames {
 				f := &m.agent.Frames[i]
 				if !f.PlayAt.Before(msg.At) {
@@ -102,8 +107,14 @@ func (m *monitor) run(in <-chan transport.Inbound) {
 	}
 }
 
-// addAudio splits a message into 20 ms frames and classifies each.
+// addAudio splits a message into 20 ms frames and classifies each. Agents
+// usually send nothing between replies; the silence the caller hears then
+// is fed to the classifier first, so its noise floor stays accurate.
 func (m *monitor) addAudio(msg transport.Inbound) {
+	if !m.heardUntil.IsZero() && msg.PlayAt.After(m.heardUntil) {
+		m.vad.Silence(msg.PlayAt.Sub(m.heardUntil))
+	}
+	m.heardUntil = msg.PlayAt.Add(sampleDuration(len(msg.Audio)))
 	n := audio.TelephonyFrameSamples
 	for off := 0; off < len(msg.Audio); off += n {
 		chunk := msg.Audio[off:min(off+n, len(msg.Audio))]
@@ -133,6 +144,16 @@ func (m *monitor) segments(gap time.Duration) []Segment {
 func (m *monitor) active(t time.Time, gap time.Duration) (Segment, bool) {
 	for _, s := range m.segments(gap) {
 		if s.End.After(t) {
+			return s, true
+		}
+	}
+	return Segment{}, false
+}
+
+// starting returns the first segment that starts at or after t.
+func (m *monitor) starting(t time.Time, gap time.Duration) (Segment, bool) {
+	for _, s := range m.segments(gap) {
+		if !s.Start.Before(t) {
 			return s, true
 		}
 	}

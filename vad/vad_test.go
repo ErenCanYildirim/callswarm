@@ -195,3 +195,28 @@ func TestDetectEmpty(t *testing.T) {
 		t.Errorf("got %v", spans)
 	}
 }
+
+func TestSilenceLowersNoiseFloor(t *testing.T) {
+	c := NewClassifier(Config{})
+	loud := make([]int16, 160)
+	for i := range loud {
+		loud[i] = int16(8000 * math.Sin(2*math.Pi*440*float64(i)/8000))
+	}
+	for range 100 { // a full 2 s window of steady sound becomes the background
+		c.Speech(loud)
+	}
+	if c.Speech(loud) {
+		t.Fatal("steady sound filling the window still counts as speech")
+	}
+	c.Silence(10 * time.Millisecond) // shorter than a frame: no change
+	if c.Speech(loud) {
+		t.Error("a gap shorter than a frame changed the noise floor")
+	}
+	c.Silence(40 * time.Millisecond)
+	if got := c.Noise(); got != silenceLevel {
+		t.Errorf("noise after a silent gap = %.1f dBFS, want %.1f", got, silenceLevel)
+	}
+	if !c.Speech(loud) {
+		t.Error("sound after a silent gap is not speech")
+	}
+}

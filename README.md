@@ -41,7 +41,12 @@ Exit codes: 0 all checks passed, 3 a check failed, 1 the run could not be carrie
 
 [`.github/workflows/smoke.yml`](.github/workflows/smoke.yml) runs [`examples/smoke`](examples/smoke) against the fake agent on every push, and is written to be copied for your own agent.
 
-## Not included
+### Agent frameworks
+
+- [Pipecat](docs/pipecat.md) and [Jargo](docs/jargo.md): what to change in a Twilio bot so callswarm can call it, and what to expect in the results.
+- [Benchmark](docs/benchmark.md): the two frameworks compared with the same providers, models and caller.
+
+## Non-goals (for now)
 
 - Phone network (SIP/PSTN) testing.
 - Synthetic caller voices (TTS-generated callers).
@@ -67,6 +72,8 @@ report/         JSON report with a reproducibility manifest, and a plain-text su
 internal/cli/   Command-line interface
 fakeagent/      Key-free echo agent with configurable timing, used as the test target
 examples/       Example scenarios
+bench/          Pipecat and Jargo bots and the scenario for the framework benchmark
+docs/           Framework setup notes and benchmark results
 ```
 
 ## Development

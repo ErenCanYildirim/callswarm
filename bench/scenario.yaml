@@ -1,0 +1,17 @@
+# The benchmark conversation: a caller phones a bakery's voice agent. Both
+# bots in this directory run the same prompt, models and voice, so the
+# differences callswarm measures come from the frameworks.
+#
+# The clips are generated once with Gemini TTS (clips/gen_clips.py) and
+# committed, so every run replays the same audio.
+name: bakery
+reply_timeout: 15s       # a cold LLM or TTS connection can be slow
+steps:
+  - listen               # the greeting
+  - say: clips/hours.wav
+  - say: clips/cakes.wav
+    wait: none           # don't wait for the answer...
+  - interrupt: clips/interrupt.wav
+    after: 1s            # ...cut in one second into it
+    wait: reply          # and wait for the answer to the new question
+  - say: clips/bye.wav

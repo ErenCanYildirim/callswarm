@@ -91,10 +91,10 @@ func (r *runner) step(st Step, sr *StepResult) error {
 		return r.sleepUntil(time.Now().Add(st.Pause))
 
 	case KindListen:
-		seg, err := r.waitReply(sr.Started)
+		// Whatever the agent is saying counts, even if it began earlier.
+		seg, err := r.waitReply(sr.Started, r.mon.active)
 		sr.Reply = seg
 		return err
-
 	case KindSay:
 		pb, err := r.conn.Play(r.ctx, st.Audio)
 		sr.Caller = pb
@@ -135,7 +135,10 @@ func (r *runner) step(st Step, sr *StepResult) error {
 func (r *runner) afterSpeaking(st Step, pb transport.Playback, sr *StepResult) error {
 	switch st.Wait {
 	case WaitReply:
-		seg, err := r.waitReply(pb.Began)
+		// The reply is speech that starts after the caller began: speech
+		// already under way, such as the reply an interruption cut into,
+		// is not an answer to what the caller just said.
+		seg, err := r.waitReply(pb.Began, r.mon.starting)
 		if st.Kind == KindSay {
 			sr.Reply = seg
 		}
@@ -148,11 +151,19 @@ func (r *runner) afterSpeaking(st Step, pb transport.Playback, sr *StepResult) e
 	return nil
 }
 
+// finder looks for agent speech relative to t.
+type finder func(t time.Time, gap time.Duration) (Segment, bool)
+
 // waitActive waits for agent speech still playing at, or starting after, t.
 func (r *runner) waitActive(t time.Time) (Segment, error) {
+	return r.waitFor(t, r.mon.active)
+}
+
+// waitFor waits until find reports agent speech relative to t.
+func (r *runner) waitFor(t time.Time, find finder) (Segment, error) {
 	deadline := time.Now().Add(r.sc.ReplyTimeout)
 	for {
-		if seg, ok := r.mon.active(t, r.sc.ReplyGap); ok {
+		if seg, ok := find(t, r.sc.ReplyGap); ok {
 			return seg, nil
 		}
 		if time.Now().After(deadline) {
@@ -164,9 +175,10 @@ func (r *runner) waitActive(t time.Time) (Segment, error) {
 	}
 }
 
-// waitReply waits for agent speech after t, then for it to finish.
-func (r *runner) waitReply(t time.Time) (*Segment, error) {
-	seg, err := r.waitActive(t)
+// waitReply waits for the agent speech find reports relative to t, then for
+// it to finish.
+func (r *runner) waitReply(t time.Time, find finder) (*Segment, error) {
+	seg, err := r.waitFor(t, find)
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,3 @@
+pipecat-ai[deepgram,elevenlabs,google,silero]==1.12.0
+fastapi==0.143.0
+uvicorn==0.54.0
