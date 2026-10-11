@@ -13,7 +13,18 @@ A Go library and CLI that plays the caller against a voice agent. It runs script
   - *Latency distribution:* p50, p90, p99 and max per run, reported alongside the load generator's own pacing jitter.
 - **CI:** reproducible runs with threshold assertions and nonzero exit codes.
 
-## Non-goals (for now)
+## Usage
+
+Install with `go install github.com/ErenCanYildirim/callswarm/cmd/callswarm@latest`, then try it against the built-in fake agent:
+
+```
+callswarm fake-agent &
+callswarm run scenario.yaml --url ws://127.0.0.1:8080 --calls 50 --concurrency 20 --ramp-up 10s --out report.json
+```
+
+`run` prints a summary and, with `--out`, writes the full JSON report. Ctrl-C stops a run and still prints the report for the calls that started. Run `callswarm run -h` for all flags.
+
+## Not included for now
 
 - Phone network (SIP/PSTN) testing.
 - Synthetic caller voices (TTS-generated callers).
@@ -36,6 +47,7 @@ metrics/        Time to first audio and interruption handling, from the timeline
 load/           Concurrent calls with ramp-up, per-call timeouts and cancellation
 summary/        Latency percentiles, latency by load, and whether the run can be trusted
 report/         JSON report with a reproducibility manifest, and a plain-text summary
+internal/cli/   Command-line interface
 ```
 
 ## Development
