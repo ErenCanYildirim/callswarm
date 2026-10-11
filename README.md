@@ -29,6 +29,9 @@ audio/          WAV loading, μ-law codec, resampling, frame chunking
 twilio/         Twilio Media Streams protocol messages
 fakeagent/      Key-free echo agent with configurable timing, used as the test target
 transport/      Caller side of a Twilio Media Streams call: handshake, paced audio, playback
+scenario/       Scenario file format and the scripted caller that runs it
+vad/            Voice activity detection for caller clips and agent audio
+timeline/       Timestamped event log of a call
 ```
 
 ## Development

@@ -139,6 +139,7 @@ type Conn struct {
 
 type clip struct {
 	frames [][]byte
+	queued time.Time
 	next   int
 	pb     Playback
 	done   chan struct{}
@@ -219,9 +220,14 @@ func (c *Conn) Stats() Stats {
 // Play queues μ-law audio and blocks until all of it has been sent in real
 // time. A partial last frame is padded with silence. Concurrent Play calls
 // on one Conn play one after another, in the order they were made.
+//
+// The audio starts with the first frame whose 20 ms window begins after the
+// call to Play, so Playback.Began is never earlier than the call, and at
+// most one frame later.
 func (c *Conn) Play(ctx context.Context, mulaw []byte) (Playback, error) {
 	cl := &clip{
 		frames: audio.FramesPadded(mulaw, audio.TelephonyFrameSamples, audio.MulawSilence),
+		queued: time.Now(),
 		done:   make(chan struct{}),
 	}
 	if len(cl.frames) == 0 {
@@ -331,7 +337,7 @@ func (c *Conn) sendLoop(start time.Time) {
 			return
 		}
 
-		frame, cl := c.nextFrame()
+		frame, cl := c.nextFrame(due.Add(-FrameDuration))
 		isSilence := cl == nil
 		if isSilence {
 			frame = silence
@@ -350,14 +356,19 @@ func (c *Conn) sendLoop(start time.Time) {
 	}
 }
 
-// nextFrame returns the next frame of the clip at the head of the queue.
-func (c *Conn) nextFrame() ([]byte, *clip) {
+// nextFrame returns the next frame of the clip at the head of the queue for
+// the frame window starting at windowStart. A clip doesn't start in a window
+// that began before it was queued: that frame's audio would predate Play.
+func (c *Conn) nextFrame(windowStart time.Time) ([]byte, *clip) {
 	c.queueMu.Lock()
 	defer c.queueMu.Unlock()
 	if len(c.queue) == 0 {
 		return nil, nil
 	}
 	cl := c.queue[0]
+	if cl.next == 0 && windowStart.Before(cl.queued) {
+		return nil, nil
+	}
 	return cl.frames[cl.next], cl
 }
 
