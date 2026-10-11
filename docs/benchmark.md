@@ -23,53 +23,38 @@ Keep in mind what the numbers can and can't show:
 - **Same design, two implementations.** Jargo is a Go port of Pipecat, so this compares two implementations of one architecture, not two approaches.
 - **Results depend on where you run them.** Provider latency depends on the distance to their servers; record where the run happened.
 
+
 ## Requirements
 
-- **Linux.** Jargo's turn taking does not build on Windows without cgo ([details](jargo.md#building)), so run everything, both bots and callswarm, under WSL2 or on a Linux machine. Keep the repository on the Linux filesystem (under `~`, not `/mnt/c`).
-- **Go 1.25 or newer** (it fetches Go 1.27 for the Jargo bot by itself) and **Python 3.11 or newer**.
-- **API keys** for Deepgram, Gemini and ElevenLabs, exported as `DEEPGRAM_API_KEY`, `GEMINI_API_KEY` and `ELEVENLABS_API_KEY`.
+- **Docker.** Both bots run in containers, built from [`bench/compose.yaml`](../bench/compose.yaml). Jargo's turn taking does not build on Windows ([details](jargo.md#building)), and running both bots the same way keeps the comparison fair: same operating system, same network path from callswarm.
+- **callswarm** on the host, installed with `go install ./cmd/callswarm`.
+- **API keys** for Deepgram, Gemini and ElevenLabs.
 - **Quota.** Each call speaks roughly 500 characters of ElevenLabs text (the greeting and three replies) and streams about 40 seconds of audio to Deepgram. 40 calls is about 20,000 characters; check your ElevenLabs plan, and its concurrency limit, before you start. Gemini's free tier has a low requests-per-minute limit, and a rate-limited reply shows up as a slow or missing one.
 
 ## Setup
 
-Generate the caller's clips once and commit them:
+Generate the caller's clips once and commit them (needs `GEMINI_API_KEY` in the environment):
 
 ```
 cd bench/clips
-python3 gen_clips.py
+python gen_clips.py
 ```
 
-ONNX Runtime for the Jargo bot's turn taking:
+Put the keys in `bench/.env`, which is gitignored:
 
 ```
-cd ~
-curl -LO https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-x64-1.30.0.tgz
-tar xzf onnxruntime-linux-x64-1.30.0.tgz
-export JARGO_ONNXRUNTIME_LIB=$HOME/onnxruntime-linux-x64-1.30.0/lib/libonnxruntime.so
+DEEPGRAM_API_KEY=...
+GEMINI_API_KEY=...
+ELEVENLABS_API_KEY=...
 ```
 
-Pipecat bot, in its own terminal:
+Build and start both bots from `bench/`. The first build downloads the base images and dependencies, a few hundred MB:
 
 ```
-cd bench/pipecat
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python bot.py
+docker compose up --build
 ```
 
-Jargo bot, in another (with `JARGO_ONNXRUNTIME_LIB` set there too):
-
-```
-cd bench/jargo
-go mod tidy
-go run .
-```
-
-callswarm, in a third:
-
-```
-go install ./cmd/callswarm
-```
+Leave it running; both bots log to that terminal. Pipecat listens on port 7860 and Jargo on 8765. If the Jargo bot exits at start with "turn taking unavailable", the ONNX Runtime library did not load, and the benchmark would not be like for like; don't run it until that is fixed.
 
 ## Run
 

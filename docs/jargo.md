@@ -5,6 +5,7 @@
 ## Building
 
 - **Go 1.27.** Jargo's `go.mod` requires it. With an older Go and the default `GOTOOLCHAIN=auto`, `go build` downloads Go 1.27 for you.
+- **Windows: use Docker.** Turn taking runs on the ONNX Runtime. Jargo's default, cgo-free build loads that library through purego's `Dlopen`, which only exists on Linux, macOS and the BSDs, so on Windows without a C compiler any program that imports Jargo's VAD or turn packages fails to compile. Build and run the bot on Linux or macOS; from Windows, run it in Docker. Jargo publishes base images for this (`gojargo/jargo-build` and `gojargo/jargo`), and [`bench/jargo/Dockerfile`](../bench/jargo/Dockerfile) builds the same way.
 - **Windows: use WSL2, or cgo.** Turn taking runs on the ONNX Runtime. Jargo's default, cgo-free build loads that library through purego's `Dlopen`, which only exists on Linux, macOS and the BSDs, so on Windows without a C compiler any program that imports Jargo's VAD or turn packages fails to compile. Build and run the bot on Linux (WSL2 works) or macOS.
 - **The ONNX Runtime library.** Turn taking (Silero VAD and Smart Turn v3) needs ONNX Runtime at run time; Jargo's Makefile fetches 1.30.0. Point Jargo at it with `JARGO_ONNXRUNTIME_LIB`. Jargo's own examples fall back to the speech-to-text service's endpointing when it is missing, which also loses barge-in; the benchmark bot refuses to start instead, so a missing library can't quietly change what is being measured.
 

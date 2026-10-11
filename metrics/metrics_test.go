@@ -178,3 +178,16 @@ func TestLateClearNotCredited(t *testing.T) {
 		t.Errorf("late clear credited: %+v", in)
 	}
 }
+
+// An agent streaming in real time can run out of queued audio a moment
+// before the clear it sent with stopping arrives; that clear still counts.
+func TestClearJustAfterStopCredited(t *testing.T) {
+	in := FromResult(result([]scenario.Kind{interrupt},
+		event{1000, timeline.CallerSpeechStarted, 1},
+		event{1500, timeline.AgentAudioStopped, 1},
+		event{1507, timeline.AgentClear, 1},
+	), Options{}).Interruptions[0]
+	if !in.Cleared {
+		t.Errorf("clear 7ms after the stop not credited: %+v", in)
+	}
+}

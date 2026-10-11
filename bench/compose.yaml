@@ -1,0 +1,12 @@
+# Both benchmark bots, each in its own container, reachable from the host
+# at ws://127.0.0.1:7860/ws (Pipecat) and ws://127.0.0.1:8765/ws (Jargo).
+# Put the API keys in bench/.env (see docs/benchmark.md); it is gitignored.
+services:
+  pipecat:
+    build: ./pipecat
+    ports: ["127.0.0.1:7860:7860"]
+    env_file: .env
+  jargo:
+    build: ./jargo
+    ports: ["127.0.0.1:8765:8765"]
+    env_file: .env

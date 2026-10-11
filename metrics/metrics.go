@@ -69,7 +69,8 @@ type Interruption struct {
 	// two talked over each other.
 	StopLatency time.Duration
 	// Cleared reports whether the agent sent a clear between the
-	// interruption and the end of its speech.
+	// interruption and the end of its speech, or just after it (see
+	// clearGrace).
 	Cleared bool
 	// Stopped reports whether the agent stopped within Options.StopWithin.
 	Stopped bool
@@ -132,6 +133,12 @@ func turn(tl *timeline.Timeline, step int) (Turn, bool) {
 	return t, true
 }
 
+// clearGrace is how long after the agent's audio stops a clear still counts
+// as part of stopping. An agent that streams in real time has almost nothing
+// queued, so when it stops sending, playback can run dry a few milliseconds
+// before its clear message arrives behind the last audio.
+const clearGrace = 100 * time.Millisecond
+
 // interruption measures the reaction to an interrupt step.
 func interruption(tl *timeline.Timeline, step int, opts Options) (Interruption, bool) {
 	start, ok := tl.First(timeline.CallerSpeechStarted, step)
@@ -151,7 +158,7 @@ func interruption(tl *timeline.Timeline, step int, opts Options) (Interruption, 
 		}
 	}
 	for _, e := range tl.Filter(timeline.AgentClear, 0) {
-		if !e.At.Before(start.At) && (in.AgentStopped.IsZero() || !e.At.After(in.AgentStopped)) {
+		if !e.At.Before(start.At) && (in.AgentStopped.IsZero() || !e.At.After(in.AgentStopped.Add(clearGrace))) {
 			in.Cleared = true
 			break
 		}

@@ -22,3 +22,8 @@ venv/
 .venv/
 
 report.json
+pipecat-check.json
+jargo-check.json
+
+__pycache__/
+/bench/.env
