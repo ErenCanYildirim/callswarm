@@ -6,7 +6,9 @@ A Go library and CLI that plays the caller against a voice agent. It runs script
 
 ## Scope
 
-- **Transport:** WebSocket audio streaming using the Twilio Media Streams protocol (μ-law, 8 kHz, 20 ms frames). Agent frameworks that accept phone calls through Twilio, such as Pipecat and Jargo, can be tested without changes.
+- **Transports:**
+  - WebSocket audio streaming using the Twilio Media Streams protocol (μ-law, 8 kHz, 20 ms frames). Agent frameworks that accept phone calls through Twilio, such as Pipecat and Jargo, can be tested without changes.
+  - LiveKit rooms, joined through the LiveKit Go SDK as an ordinary participant, for agents built on LiveKit Agents or anything else that answers in a LiveKit room. See [docs/livekit.md](docs/livekit.md).
 - **Scripted callers:** conversations built from pre-recorded audio files, pauses and interruption offsets.
 - **Load:** a concurrency runner that ramps up simultaneous sessions.
 - **Metrics:**
@@ -43,6 +45,7 @@ Exit codes: 0 all checks passed, 3 a check failed, 1 the run could not be carrie
 
 ### Agent frameworks
 
+- [LiveKit](docs/livekit.md): calling an agent through a LiveKit room with `--transport livekit`, and how its measurements differ.
 - [Pipecat](docs/pipecat.md) and [Jargo](docs/jargo.md): what to change in a Twilio bot so callswarm can call it, and what to expect in the results.
 - [Benchmark](docs/benchmark.md): the two frameworks compared with the same providers, models and caller.
 
@@ -52,38 +55,45 @@ Exit codes: 0 all checks passed, 3 a check failed, 1 the run could not be carrie
 - Synthetic caller voices (TTS-generated callers).
 - LLM-based judging of conversation quality.
 - Hosted service, dashboards or accounts.
-- WebRTC transports. A LiveKit transport may follow once the WebSocket path is solid.
+- WebRTC transports other than LiveKit.
 
 ## Layout
 
 ```
-cmd/callswarm/  CLI entry point
-audio/          WAV loading, μ-law codec, resampling, frame chunking
-twilio/         Twilio Media Streams protocol messages
-transport/      Caller side of a Twilio Media Streams call: handshake, paced audio, playback
-scenario/       Scenario file format and the scripted caller that runs it
-vad/            Voice activity detection for caller clips and agent audio
-timeline/       Timestamped event log of a call
-metrics/        Time to first audio and interruption handling, from the timeline
-load/           Concurrent calls with ramp-up, per-call timeouts and cancellation
-summary/        Latency percentiles, latency by load, and whether the run can be trusted
-check/          Pass/fail checks on a run summary, for CI
-report/         JSON report with a reproducibility manifest, and a plain-text summary
-internal/cli/   Command-line interface
-fakeagent/      Key-free echo agent with configurable timing, used as the test target
-examples/       Example scenarios
-bench/          Pipecat and Jargo bots and the scenario for the framework benchmark
-docs/           Framework setup notes and benchmark results
-bench/          Pipecat and Jargo bots, their containers and the scenario for the framework benchmark
+cmd/callswarm/           CLI entry point
+audio/                   WAV loading, μ-law codec, resampling, frame chunking
+twilio/                  Twilio Media Streams protocol messages
+transport/               The Call interface, real-time caller audio pacing, and the Twilio Media Streams call
+transport/livekit/       Calls through a LiveKit room, with pure-Go Opus
+scenario/                Scenario file format and the scripted caller that runs it
+vad/                     Voice activity detection for caller clips and agent audio
+timeline/                Timestamped event log of a call
+metrics/                 Time to first audio and interruption handling, from the timeline
+load/                    Concurrent calls with ramp-up, per-call timeouts and cancellation
+summary/                 Latency percentiles, latency by load, and whether the run can be trusted
+check/                   Pass/fail checks on a run summary, for CI
+report/                  JSON report with a reproducibility manifest, and a plain-text summary
+internal/cli/            Command-line interface
+fakeagent/               Key-free echo agent with configurable timing, used as the test target
+fakeagent/livekitagent/  The same fake agent, joining LiveKit rooms
+examples/                Example scenarios
+bench/                   Pipecat and Jargo bots, their containers and the scenario for the framework benchmark
+docs/                    Framework setup notes and benchmark results
 ```
 
 ## Development
 
-Requires Go 1.24 or newer.
+Requires Go 1.26 or newer, and golangci-lint 2.14 or newer for linting.
 
 ```
 go test -race ./...
 golangci-lint run
+```
+
+The LiveKit tests skip unless `CALLSWARM_LIVEKIT_URL` points at a LiveKit server. With a development server running (see [docs/livekit.md](docs/livekit.md#trying-it-locally)):
+
+```
+CALLSWARM_LIVEKIT_URL=ws://127.0.0.1:7880 go test -race ./transport/livekit
 ```
 
 ## License

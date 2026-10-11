@@ -22,7 +22,7 @@ type Result struct {
 	Steps    []StepResult
 	// Agent is everything the agent sent, for computing metrics.
 	Agent AgentAudio
-	// Timeline is the run's event log
+	// Timeline is the run's event log.
 	Timeline *timeline.Timeline
 	// Err is the error that stopped the run, if any. Steps after a failed
 	// step are not run.
@@ -51,7 +51,7 @@ type StepResult struct {
 // Run plays the scenario on an open call and returns what happened. It takes
 // over the call's Inbound channel. The call is left open; the caller closes
 // it.
-func Run(ctx context.Context, conn *transport.Conn, sc *Scenario) *Result {
+func Run(ctx context.Context, conn transport.Call, sc *Scenario) *Result {
 	r := &runner{ctx: ctx, conn: conn, sc: sc, mon: newMonitor(conn.Inbound())}
 	res := &Result{Scenario: sc.Name, Started: time.Now()}
 	for i, st := range sc.Steps {
@@ -80,7 +80,7 @@ func Run(ctx context.Context, conn *transport.Conn, sc *Scenario) *Result {
 
 type runner struct {
 	ctx  context.Context
-	conn *transport.Conn
+	conn transport.Call
 	sc   *Scenario
 	mon  *monitor
 }
@@ -95,6 +95,7 @@ func (r *runner) step(st Step, sr *StepResult) error {
 		seg, err := r.waitReply(sr.Started, r.mon.active)
 		sr.Reply = seg
 		return err
+
 	case KindSay:
 		pb, err := r.conn.Play(r.ctx, st.Audio)
 		sr.Caller = pb

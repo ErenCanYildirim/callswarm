@@ -62,15 +62,15 @@ type Interruption struct {
 	Step int
 	// CallerSpeechStarted is when the caller's interrupting words began.
 	CallerSpeechStarted time.Time
-	// AgentStopped is when the interrupted agent speech ended. Zero if it
-	// never ended during the run.
+	// AgentStopped is when the interrupted agent speech ended: the first
+	// silence after which the agent didn't talk again while the caller was
+	// still speaking. Zero if it never ended during the run.
 	AgentStopped time.Time
 	// StopLatency is AgentStopped minus CallerSpeechStarted: how long the
 	// two talked over each other.
 	StopLatency time.Duration
-	// Cleared reports whether the agent sent a clear between the
-	// interruption and the end of its speech, or just after it (see
-	// clearGrace).
+	// Cleared reports whether the agent sent a clear in reaction: while the
+	// caller was interrupting, or as its speech ended (see clearGrace).
 	Cleared bool
 	// Stopped reports whether the agent stopped within Options.StopWithin.
 	Stopped bool
@@ -147,23 +147,50 @@ func interruption(tl *timeline.Timeline, step int, opts Options) (Interruption, 
 	}
 	in := Interruption{Step: step, CallerSpeechStarted: start.At}
 
+	end, _ := tl.Last(timeline.CallerSpeechEnded, step)
+	callerEnd := end.At
+
 	// The interrupted speech is the agent speech in progress when the
-	// caller started; it ends at the first stop after that.
+	// caller started. It ends at the first stop after that which the agent
+	// doesn't follow by talking again while the caller is still speaking: a
+	// pause between words is not stopping.
+	starts := tl.Filter(timeline.AgentAudioStarted, 0)
 	for _, e := range tl.Filter(timeline.AgentAudioStopped, 0) {
-		if e.At.After(start.At) {
-			in.AgentStopped = e.At
-			in.StopLatency = e.At.Sub(start.At)
-			in.Stopped = in.StopLatency <= opts.StopWithin
-			break
+		if !e.At.After(start.At) || resumedBefore(starts, e.At, callerEnd) {
+			continue
 		}
+		in.AgentStopped = e.At
+		in.StopLatency = e.At.Sub(start.At)
+		in.Stopped = in.StopLatency <= opts.StopWithin
+		break
 	}
+
+	// A clear counts if the agent sent it while the caller was interrupting,
+	// or as it stopped.
 	for _, e := range tl.Filter(timeline.AgentClear, 0) {
-		if !e.At.Before(start.At) && (in.AgentStopped.IsZero() || !e.At.After(in.AgentStopped.Add(clearGrace))) {
+		if e.At.Before(start.At) {
+			continue
+		}
+		duringCaller := !callerEnd.IsZero() && !e.At.After(callerEnd)
+		withStop := !in.AgentStopped.IsZero() && !e.At.After(in.AgentStopped.Add(clearGrace))
+		if duringCaller || withStop || in.AgentStopped.IsZero() {
 			in.Cleared = true
 			break
 		}
 	}
 	return in, true
+}
+
+// resumedBefore reports whether agent speech started after stop and before
+// until. A zero until means the caller's speech has no recorded end, and
+// nothing counts as resuming.
+func resumedBefore(starts []timeline.Event, stop, until time.Time) bool {
+	for _, s := range starts {
+		if s.At.After(stop) && s.At.Before(until) {
+			return true
+		}
+	}
+	return false
 }
 
 // nextTurn is when the caller next starts speaking in a later step, or

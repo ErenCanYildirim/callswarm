@@ -8,17 +8,25 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/ErenCanYildirim/callswarm/fakeagent"
+	"github.com/ErenCanYildirim/callswarm/fakeagent/livekitagent"
 )
 
 func fakeAgentCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	var addr string
+	var addr, mode, prefix string
+	var srv livekitagent.Server
 	var cfg fakeagent.Config
 	fs := flag.NewFlagSet("fake-agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&addr, "addr", "127.0.0.1:8080", "address to listen on")
+	fs.StringVar(&mode, "transport", "twilio", "twilio (serve Media Streams WebSockets) or livekit (join LiveKit rooms)")
+	fs.StringVar(&addr, "addr", "127.0.0.1:8080", "twilio: address to listen on")
+	fs.StringVar(&srv.URL, "url", "", "livekit: server URL (default $LIVEKIT_URL)")
+	fs.StringVar(&srv.APIKey, "api-key", "", "livekit: API key (default $LIVEKIT_API_KEY)")
+	fs.StringVar(&srv.APISecret, "api-secret", "", "livekit: API secret (default $LIVEKIT_API_SECRET)")
+	fs.StringVar(&prefix, "room-prefix", "callswarm-", "livekit: join new rooms whose names start with this")
 	fs.DurationVar(&cfg.ResponseDelay, "delay", 200*time.Millisecond, "pause after the caller stops before answering")
 	fs.DurationVar(&cfg.EndpointSilence, "endpoint", 300*time.Millisecond, "silence that ends the caller's turn")
 	fs.BoolVar(&cfg.BargeIn, "barge-in", true, "stop talking when the caller interrupts")
@@ -27,9 +35,10 @@ func fakeAgentCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "Usage: callswarm fake-agent [flags]\n\n"+
 			"Serves an agent that echoes the caller back after a fixed delay, speaking\n"+
-			"the Twilio Media Streams protocol on any path. Its time to first audio is\n"+
-			"exactly --endpoint plus --delay, so callswarm's measurements of it can be\n"+
-			"checked against a known answer.\n\nFlags:\n")
+			"the Twilio Media Streams protocol on any path, or, with --transport livekit,\n"+
+			"joining every new LiveKit room whose name has the --room-prefix. Its time\n"+
+			"to first audio is exactly --endpoint plus --delay, so callswarm's\n"+
+			"measurements of it can be checked against a known answer.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -41,7 +50,36 @@ func fakeAgentCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	if fs.NArg() > 0 {
 		return exitCode(usageErrorf("unexpected argument %q", fs.Arg(0)), "fake-agent", stderr)
 	}
-	return exitCode(serveFakeAgent(ctx, addr, cfg, stdout), "fake-agent", stderr)
+	switch mode {
+	case "twilio":
+		return exitCode(serveFakeAgent(ctx, addr, cfg, stdout), "fake-agent", stderr)
+	case "livekit":
+		return exitCode(serveLiveKitFakeAgent(ctx, srv, prefix, cfg, stdout, stderr), "fake-agent", stderr)
+	}
+	return exitCode(usageErrorf("--transport must be twilio or livekit, got %q", mode), "fake-agent", stderr)
+}
+
+func serveLiveKitFakeAgent(ctx context.Context, srv livekitagent.Server, prefix string, cfg fakeagent.Config, stdout, stderr io.Writer) error {
+	if srv.URL == "" {
+		srv.URL = os.Getenv("LIVEKIT_URL")
+	}
+	if srv.APIKey == "" {
+		srv.APIKey = os.Getenv("LIVEKIT_API_KEY")
+	}
+	if srv.APISecret == "" {
+		srv.APISecret = os.Getenv("LIVEKIT_API_SECRET")
+	}
+	switch {
+	case srv.URL == "":
+		return usageErrorf("--url or LIVEKIT_URL is required with --transport livekit")
+	case srv.APIKey == "" || srv.APISecret == "":
+		return usageErrorf("an API key and secret are required: set LIVEKIT_API_KEY and LIVEKIT_API_SECRET, or --api-key and --api-secret")
+	}
+	quietLiveKit()
+	_, _ = fmt.Fprintf(stdout, "fake agent joining rooms named %s* on %s (first audio %v after caller speech ends, barge-in %v)\n",
+		prefix, srv.URL, cfg.ExpectedFirstAudio(), cfg.BargeIn)
+	logf := func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, format+"\n", args...) }
+	return livekitagent.Serve(ctx, srv, prefix, cfg, logf)
 }
 
 func serveFakeAgent(ctx context.Context, addr string, cfg fakeagent.Config, stdout io.Writer) error {

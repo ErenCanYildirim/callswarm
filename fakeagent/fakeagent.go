@@ -141,8 +141,10 @@ func (a *Agent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Echoed responses can be large in burst mode.
 	conn.SetReadLimit(1 << 20)
-	s := &session{cfg: a.cfg, conn: conn}
-	err = s.run(r.Context())
+	s := &session{cfg: a.cfg}
+	tw := &twilioOutput{conn: conn, session: s}
+	s.out = tw
+	err = s.run(r.Context(), conn)
 	// Close errors are ignored: the call is over either way, and the peer
 	// may already have gone.
 	switch {
@@ -165,7 +167,7 @@ type utterance struct {
 
 type session struct {
 	cfg       Config
-	conn      *websocket.Conn
+	out       Output
 	streamSid string
 
 	// Voice activity state, touched only by the read loop.
@@ -189,7 +191,7 @@ func (s *session) emit(kind EventKind, response int, detail string) {
 	}
 }
 
-func (s *session) run(ctx context.Context) error {
+func (s *session) run(ctx context.Context, conn *websocket.Conn) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -204,7 +206,7 @@ func (s *session) run(ctx context.Context) error {
 	defer cancel()
 
 	for {
-		_, data, err := s.conn.Read(ctx)
+		_, data, err := conn.Read(ctx)
 		if err != nil {
 			if websocket.CloseStatus(err) != -1 || errors.Is(err, context.Canceled) {
 				return nil
@@ -371,7 +373,7 @@ func (s *session) speak(ctx context.Context, mulaw []byte) error {
 		if respCtx.Err() != nil {
 			break
 		}
-		if err := s.send(ctx, twilio.AgentMedia(s.streamSid, f)); err != nil {
+		if err := s.out.Audio(ctx, f); err != nil {
 			return err
 		}
 		if i == 0 {
@@ -394,25 +396,90 @@ func (s *session) speak(ctx context.Context, mulaw []byte) error {
 
 	if respCtx.Err() != nil {
 		// Interrupted: tell the caller to drop any audio still buffered.
-		if err := s.send(ctx, twilio.Clear(s.streamSid)); err != nil {
+		if err := s.out.Clear(ctx); err != nil {
 			return err
 		}
 		s.emit(EventResponseInterrupted, n, "")
 		return nil
 	}
-	if err := s.send(ctx, twilio.AgentMark(s.streamSid, fmt.Sprintf("response-%d", n))); err != nil {
+	if err := s.out.Mark(ctx, fmt.Sprintf("response-%d", n)); err != nil {
 		return err
 	}
 	s.emit(EventResponseFinished, n, "")
 	return nil
 }
 
-func (s *session) send(ctx context.Context, m twilio.Message) error {
+// Output is where an agent session sends its side of the call. Transports
+// without clear or marks implement those as no-ops.
+type Output interface {
+	// Audio sends one 20 ms frame of μ-law agent audio.
+	Audio(ctx context.Context, frame []byte) error
+	// Clear tells the caller to drop agent audio it has not played yet.
+	Clear(ctx context.Context) error
+	// Mark asks to be told when the audio sent so far has played.
+	Mark(ctx context.Context, name string) error
+}
+
+// twilioOutput sends a session's output as Twilio Media Streams messages.
+type twilioOutput struct {
+	conn    *websocket.Conn
+	session *session
+}
+
+func (o *twilioOutput) Audio(ctx context.Context, frame []byte) error {
+	return o.send(ctx, twilio.AgentMedia(o.session.streamSid, frame))
+}
+
+func (o *twilioOutput) Clear(ctx context.Context) error {
+	return o.send(ctx, twilio.Clear(o.session.streamSid))
+}
+
+func (o *twilioOutput) Mark(ctx context.Context, name string) error {
+	return o.send(ctx, twilio.AgentMark(o.session.streamSid, name))
+}
+
+func (o *twilioOutput) send(ctx context.Context, m twilio.Message) error {
 	data, err := twilio.Encode(m)
 	if err != nil {
 		return err
 	}
-	return s.conn.Write(ctx, websocket.MessageText, data)
+	return o.conn.Write(ctx, websocket.MessageText, data)
+}
+
+// Session is one call's turn taking, for carrying the agent over a transport
+// other than Twilio Media Streams: feed it the caller's audio with Hear, and
+// it answers through its Output with the same timing as Agent.
+type Session struct {
+	s     *session
+	turns chan utterance
+}
+
+// NewSession returns a session that answers through out. Name identifies
+// the call in events.
+func NewSession(cfg Config, name string, out Output) *Session {
+	return &Session{
+		s:     &session{cfg: cfg.withDefaults(), out: out, streamSid: name},
+		turns: make(chan utterance, 16),
+	}
+}
+
+// Hear takes one 20 ms frame of the caller's μ-law audio, as it arrives.
+// It must not be called concurrently.
+func (s *Session) Hear(frame []byte) {
+	if u, done := s.s.listen(frame); done {
+		select {
+		case s.turns <- u:
+		default:
+			// Too many unanswered turns; drop rather than block the caller.
+		}
+	}
+}
+
+// Run answers the caller's turns until ctx is done.
+func (s *Session) Run(ctx context.Context) {
+	s.s.emit(EventStarted, 0, "")
+	s.s.respond(ctx, s.turns)
+	s.s.emit(EventStopped, 0, "")
 }
 
 // sleepUntil waits until t or until ctx is done. It reports whether the

@@ -19,7 +19,6 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/ErenCanYildirim/callswarm/audio"
 	"github.com/ErenCanYildirim/callswarm/twilio"
 )
 
@@ -109,7 +108,7 @@ type Stats struct {
 	LateFrames   int // frames sent more than 5 ms past schedule
 }
 
-// Conn is one simulated call
+// Conn is one simulated call over Twilio Media Streams.
 type Conn struct {
 	opts   Options
 	ws     *websocket.Conn
@@ -119,31 +118,14 @@ type Conn struct {
 	cancel context.CancelCauseFunc
 
 	writeMu sync.Mutex // guards caller and writes, so sequence numbers go out in order
+	sender  *Sender
+	playout Playout
 
-	queueMu    sync.Mutex
-	queue      []*clip
-	senderDone bool // set once the sender has stopped; no more clips play
-
-	statsMu       sync.Mutex
-	stats         Stats
-	totalLateness time.Duration
-
-	playMu    sync.Mutex
-	playEnd   time.Time // when buffered agent audio finishes playing
+	marksMu   sync.Mutex
 	marks     []*pendingMark
 	inbound   chan Inbound
 	readDone  chan struct{}
-	sendDone  chan struct{}
 	closeOnce sync.Once
-}
-
-type clip struct {
-	frames [][]byte
-	queued time.Time
-	next   int
-	pb     Playback
-	done   chan struct{}
-	err    error
 }
 
 type pendingMark struct {
@@ -176,8 +158,10 @@ func Dial(ctx context.Context, url string, opts Options) (*Conn, error) {
 		cancel:   cancel,
 		inbound:  make(chan Inbound, inboundBuffer),
 		readDone: make(chan struct{}),
-		sendDone: make(chan struct{}),
 	}
+	c.sender = NewSender(callCtx, cancel, func(frame []byte, offset time.Duration) error {
+		return c.writeNow(func(tc *twilio.Caller) twilio.Message { return tc.Media(frame, offset) })
+	})
 	for _, build := range []func(*twilio.Caller) twilio.Message{(*twilio.Caller).Connected, (*twilio.Caller).Start} {
 		if err := c.write(ctx, build); err != nil {
 			_ = ws.CloseNow()
@@ -185,9 +169,8 @@ func Dial(ctx context.Context, url string, opts Options) (*Conn, error) {
 			return nil, fmt.Errorf("handshake: %w", err)
 		}
 	}
-	start := time.Now()
 	go c.readLoop()
-	go c.sendLoop(start)
+	c.sender.Start(time.Now())
 	return c, nil
 }
 
@@ -207,65 +190,12 @@ func (c *Conn) Done() <-chan struct{} { return c.ctx.Done() }
 func (c *Conn) Err() error { return context.Cause(c.ctx) }
 
 // Stats reports sender pacing so far.
-func (c *Conn) Stats() Stats {
-	c.statsMu.Lock()
-	defer c.statsMu.Unlock()
-	s := c.stats
-	if n := s.FramesSent; n > 0 {
-		s.MeanLateness = c.totalLateness / time.Duration(n)
-	}
-	return s
-}
+func (c *Conn) Stats() Stats { return c.sender.Stats() }
 
 // Play queues μ-law audio and blocks until all of it has been sent in real
-// time. A partial last frame is padded with silence. Concurrent Play calls
-// on one Conn play one after another, in the order they were made.
-//
-// The audio starts with the first frame whose 20 ms window begins after the
-// call to Play, so Playback.Began is never earlier than the call, and at
-// most one frame later.
+// time; see Sender.Play.
 func (c *Conn) Play(ctx context.Context, mulaw []byte) (Playback, error) {
-	cl := &clip{
-		frames: audio.FramesPadded(mulaw, audio.TelephonyFrameSamples, audio.MulawSilence),
-		queued: time.Now(),
-		done:   make(chan struct{}),
-	}
-	if len(cl.frames) == 0 {
-		return Playback{}, nil
-	}
-	c.queueMu.Lock()
-	if c.senderDone {
-		c.queueMu.Unlock()
-		return Playback{}, context.Cause(c.ctx)
-	}
-	c.queue = append(c.queue, cl)
-	c.queueMu.Unlock()
-
-	select {
-	case <-cl.done:
-		return cl.pb, cl.err
-	case <-ctx.Done():
-		c.dropClip(cl)
-		<-cl.done
-		return cl.pb, ctx.Err()
-	case <-c.ctx.Done():
-		<-cl.done
-		return cl.pb, cl.err
-	}
-}
-
-// dropClip stops a clip; frames already sent stay sent.
-func (c *Conn) dropClip(target *clip) {
-	c.queueMu.Lock()
-	defer c.queueMu.Unlock()
-	for i, cl := range c.queue {
-		if cl == target {
-			c.queue = append(c.queue[:i], c.queue[i+1:]...)
-			cl.err = context.Canceled
-			close(cl.done)
-			return
-		}
-	}
+	return c.sender.Play(ctx, mulaw)
 }
 
 // Close ends the call the way Twilio does: it sends stop and closes the
@@ -276,7 +206,7 @@ func (c *Conn) Close() error {
 	c.closeOnce.Do(func() {
 		alreadyEnded := c.ctx.Err() != nil
 		c.cancel(ErrClosed)
-		<-c.sendDone
+		<-c.sender.Done()
 		c.clearMarks(false)
 
 		if !alreadyEnded {
@@ -314,113 +244,6 @@ func (c *Conn) writeNow(build func(*twilio.Caller) twilio.Message) error {
 	return c.write(ctx, build)
 }
 
-// sendLoop streams one frame every 20 ms for the life of the call: queued
-// clip audio when there is some, silence otherwise. Frame n is sent at
-// start + (n+1)*20ms, once its audio would have been captured.
-func (c *Conn) sendLoop(start time.Time) {
-	defer close(c.sendDone)
-	defer c.failQueue()
-	silence := make([]byte, audio.TelephonyFrameSamples)
-	for i := range silence {
-		silence[i] = audio.MulawSilence
-	}
-
-	timer := time.NewTimer(0)
-	defer timer.Stop()
-	<-timer.C
-	for n := 0; ; n++ {
-		due := start.Add(time.Duration(n+1) * FrameDuration)
-		timer.Reset(time.Until(due))
-		select {
-		case <-timer.C:
-		case <-c.ctx.Done():
-			return
-		}
-
-		frame, cl := c.nextFrame(due.Add(-FrameDuration))
-		isSilence := cl == nil
-		if isSilence {
-			frame = silence
-		}
-		now := time.Now()
-		offset := time.Duration(n) * FrameDuration
-		err := c.writeNow(func(tc *twilio.Caller) twilio.Message { return tc.Media(frame, offset) })
-		if err != nil {
-			c.cancel(fmt.Errorf("sending audio: %w", err))
-			return
-		}
-		c.recordSend(now.Sub(due), isSilence)
-		if cl != nil {
-			c.advance(cl, now)
-		}
-	}
-}
-
-// nextFrame returns the next frame of the clip at the head of the queue for
-// the frame window starting at windowStart. A clip doesn't start in a window
-// that began before it was queued: that frame's audio would predate Play.
-func (c *Conn) nextFrame(windowStart time.Time) ([]byte, *clip) {
-	c.queueMu.Lock()
-	defer c.queueMu.Unlock()
-	if len(c.queue) == 0 {
-		return nil, nil
-	}
-	cl := c.queue[0]
-	if cl.next == 0 && windowStart.Before(cl.queued) {
-		return nil, nil
-	}
-	return cl.frames[cl.next], cl
-}
-
-// advance records a sent frame and completes the clip after its last frame .
-func (c *Conn) advance(cl *clip, sentAt time.Time) {
-	c.queueMu.Lock()
-	defer c.queueMu.Unlock()
-	if len(c.queue) == 0 || c.queue[0] != cl {
-		return // dropped while sending
-	}
-	if cl.next == 0 {
-		cl.pb.Began = sentAt.Add(-FrameDuration)
-	}
-	cl.next++
-	cl.pb.Frames = cl.next
-	cl.pb.Ended = sentAt
-	if cl.next == len(cl.frames) {
-		c.queue = c.queue[1:]
-		close(cl.done)
-	}
-}
-
-func (c *Conn) failQueue() {
-	c.queueMu.Lock()
-	defer c.queueMu.Unlock()
-	c.senderDone = true
-	for _, cl := range c.queue {
-		cl.err = context.Cause(c.ctx)
-		close(cl.done)
-	}
-	c.queue = nil
-}
-
-func (c *Conn) recordSend(lateness time.Duration, isSilence bool) {
-	if lateness < 0 {
-		lateness = 0
-	}
-	c.statsMu.Lock()
-	defer c.statsMu.Unlock()
-	c.stats.FramesSent++
-	if isSilence {
-		c.stats.SilenceSent++
-	}
-	c.totalLateness += lateness
-	if lateness > c.stats.MaxLateness {
-		c.stats.MaxLateness = lateness
-	}
-	if lateness > 5*time.Millisecond {
-		c.stats.LateFrames++
-	}
-}
-
 // readLoop receives agent messages until the connection ends.
 func (c *Conn) readLoop() {
 	defer close(c.readDone)
@@ -451,7 +274,7 @@ func (c *Conn) readLoop() {
 			if err != nil {
 				continue // Decode already validated the payload
 			}
-			in = Inbound{Kind: KindAudio, At: at, Audio: pcm, PlayAt: c.buffer(at, pcm)}
+			in = Inbound{Kind: KindAudio, At: at, Audio: pcm, PlayAt: c.playout.Add(at, len(pcm))}
 		case twilio.EventMark:
 			c.addMark(at, msg.Mark.Name)
 			in = Inbound{Kind: KindMark, At: at, Mark: msg.Mark.Name}
@@ -469,24 +292,11 @@ func (c *Conn) readLoop() {
 	}
 }
 
-// buffer appends agent audio to the playout buffer and returns when it
-// starts playing.
-func (c *Conn) buffer(at time.Time, mulaw []byte) time.Time {
-	c.playMu.Lock()
-	defer c.playMu.Unlock()
-	playAt := at
-	if c.playEnd.After(at) {
-		playAt = c.playEnd
-	}
-	c.playEnd = playAt.Add(time.Duration(len(mulaw)) * time.Second / audio.TelephonySampleRate)
-	return playAt
-}
-
 // addMark echoes the mark once the audio buffered before it has played.
 func (c *Conn) addMark(at time.Time, name string) {
-	c.playMu.Lock()
-	defer c.playMu.Unlock()
-	wait := c.playEnd.Sub(at)
+	c.marksMu.Lock()
+	defer c.marksMu.Unlock()
+	wait := c.playout.End().Sub(at)
 	if wait <= 0 {
 		go c.echoMark(name)
 		return
@@ -501,8 +311,8 @@ func (c *Conn) addMark(at time.Time, name string) {
 }
 
 func (c *Conn) removeMark(pm *pendingMark) bool {
-	c.playMu.Lock()
-	defer c.playMu.Unlock()
+	c.marksMu.Lock()
+	defer c.marksMu.Unlock()
 	for i, m := range c.marks {
 		if m == pm {
 			c.marks = append(c.marks[:i], c.marks[i+1:]...)
@@ -515,19 +325,15 @@ func (c *Conn) removeMark(pm *pendingMark) bool {
 // clearBuffer discards unplayed agent audio and, like Twilio, immediately
 // echoes the marks that were waiting on it.
 func (c *Conn) clearBuffer(at time.Time) {
-	c.playMu.Lock()
-	if c.playEnd.After(at) {
-		c.playEnd = at
-	}
-	c.playMu.Unlock()
+	c.playout.Clear(at)
 	c.clearMarks(true)
 }
 
 func (c *Conn) clearMarks(echo bool) {
-	c.playMu.Lock()
+	c.marksMu.Lock()
 	marks := c.marks
 	c.marks = nil
-	c.playMu.Unlock()
+	c.marksMu.Unlock()
 	for _, m := range marks {
 		if m.timer.Stop() && echo {
 			c.echoMark(m.name)

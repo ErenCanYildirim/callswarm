@@ -27,6 +27,10 @@ type Manifest struct {
 
 	// URL is the agent endpoint with credentials and query removed.
 	URL string `json:"url"`
+	// Transport is how calls reached the agent: twilio or livekit. Empty in
+	// reports made before it was recorded, and when the SDK caller didn't
+	// set it.
+	Transport string `json:"transport,omitempty"`
 
 	Scenario       string `json:"scenario"`
 	ScenarioDigest string `json:"scenario_digest"`

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -98,6 +99,11 @@ func TestUsageAndVersion(t *testing.T) {
 func TestRunRejectsBadFlags(t *testing.T) {
 	sc := writeScenario(t, "  - say: hello.wav\n")
 	ctx := context.Background()
+	for _, env := range []string{"LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"} {
+		t.Setenv(env, "")
+	}
+	lk := []string{"run", sc, "--transport", "livekit", "--url", "ws://x"}
+	keys := slices.Concat(lk, []string{"--api-key", "k", "--api-secret", "s"})
 	for name, tc := range map[string]struct {
 		args []string
 		want string
@@ -117,6 +123,12 @@ func TestRunRejectsBadFlags(t *testing.T) {
 		"bad fail-on":    {[]string{"run", sc, "--url", "ws://x", "--fail-on", "sometimes"}, "--fail-on"},
 		"bad rate":       {[]string{"run", sc, "--url", "ws://x", "--min-reply-rate", "95"}, "--min-reply-rate"},
 		"bad max-failed": {[]string{"run", sc, "--url", "ws://x", "--max-failed", "-2"}, "--max-failed"},
+		"bad transport":  {[]string{"run", sc, "--url", "ws://x", "--transport", "sip"}, "--transport"},
+		"livekit no key": {lk, "LIVEKIT_API_KEY"},
+		"livekit no url": {[]string{"run", sc, "--transport", "livekit", "--api-key", "k", "--api-secret", "s"}, "--url is required"},
+		"livekit header": {slices.Concat(keys, []string{"--header", "A: b"}), "only to --transport twilio"},
+		"twilio agent":   {[]string{"run", sc, "--url", "ws://x", "--agent-name", "a"}, "only to --transport livekit"},
+		"answer timeout": {slices.Concat(keys, []string{"--answer-timeout", "0s"}), "--answer-timeout"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			code, _, stderr := run(t, ctx, tc.args...)

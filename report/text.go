@@ -21,7 +21,11 @@ func WriteText(w io.Writer, s summary.Summary, m Manifest) error {
 		name = "(unnamed scenario)"
 	}
 	p("callswarm %s - %s\n", m.Version, name)
-	p("%d calls, peak %d concurrent, %s against %s\n", s.Calls, s.MaxActive, human(s.Duration), m.URL)
+	target := m.URL
+	if m.Transport == "livekit" {
+		target += " (LiveKit)"
+	}
+	p("%d calls, peak %d concurrent, %s against %s\n", s.Calls, s.MaxActive, human(s.Duration), target)
 	p("health: %s\n", strings.ToUpper(string(s.Health)))
 
 	p("\nTime to first audio\n")
@@ -52,9 +56,14 @@ func WriteText(w io.Writer, s summary.Summary, m Manifest) error {
 
 	if in := s.Interruptions; in.Count > 0 {
 		p("\nInterruptions\n")
-		p("  %s: stopped within %s in %d (%s), sent clear in %d (%s)\n",
+		p("  %s: stopped within %s in %d (%s)",
 			plural(in.Count, "interruption"), short(time.Duration(m.StopWithinMS*float64(time.Millisecond))),
-			in.Stopped, percent(in.Stopped, in.Count), in.Cleared, percent(in.Cleared, in.Count))
+			in.Stopped, percent(in.Stopped, in.Count))
+		// LiveKit has no clear message: an agent stops by stopping sending.
+		if m.Transport != "livekit" {
+			p(", sent clear in %d (%s)", in.Cleared, percent(in.Cleared, in.Count))
+		}
+		p("\n")
 		if d := in.StopLatency; d.Count > 0 {
 			p("  time talking over the caller: p50 %s, p90 %s, max %s (n=%d)\n",
 				short(d.P50), short(d.P90), short(d.Max), d.Count)

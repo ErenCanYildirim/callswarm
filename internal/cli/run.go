@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,12 +16,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	lklogger "github.com/livekit/protocol/logger"
+	lksdk "github.com/livekit/server-sdk-go/v2"
+
 	"github.com/ErenCanYildirim/callswarm/check"
 	"github.com/ErenCanYildirim/callswarm/load"
 	"github.com/ErenCanYildirim/callswarm/metrics"
 	"github.com/ErenCanYildirim/callswarm/report"
 	"github.com/ErenCanYildirim/callswarm/scenario"
 	"github.com/ErenCanYildirim/callswarm/summary"
+	"github.com/ErenCanYildirim/callswarm/transport"
+	"github.com/ErenCanYildirim/callswarm/transport/livekit"
 )
 
 // progressInterval is how often progress is printed during a run.
@@ -75,6 +82,7 @@ func (f *paramFlag) Set(v string) error {
 }
 
 type runOptions struct {
+	transport   string
 	url         string
 	calls       int
 	concurrency int
@@ -94,13 +102,26 @@ type runOptions struct {
 	maxStopLatency limitFlag
 	minReplyRate   float64
 	minStopRate    float64
+
+	lk livekitOptions
+}
+
+// livekitOptions are the flags for --transport livekit.
+type livekitOptions struct {
+	apiKey        string
+	apiSecret     string
+	agentName     string
+	agentMetadata string
+	roomPrefix    string
+	answerTimeout time.Duration
 }
 
 func runCommand(ctx context.Context, args []string, version string, stdout, stderr io.Writer) int {
 	var o runOptions
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&o.url, "url", "", "agent WebSocket URL, ws:// or wss:// (required)")
+	fs.StringVar(&o.transport, "transport", "twilio", "how to reach the agent: twilio (Media Streams WebSocket) or livekit")
+	fs.StringVar(&o.url, "url", "", "agent WebSocket URL, or the LiveKit server URL with --transport livekit (default $LIVEKIT_URL there); ws:// or wss:// (required)")
 	fs.IntVar(&o.calls, "calls", 1, "total number of calls")
 	fs.IntVar(&o.concurrency, "concurrency", 1, "most calls active at once")
 	fs.DurationVar(&o.rampUp, "ramp-up", 0, "time to grow from 1 to full concurrency, such as 30s")
@@ -118,8 +139,17 @@ func runCommand(ctx context.Context, args []string, version string, stdout, stde
 	fs.Var(&o.maxStopLatency, "max-stop-latency", "check: limit on time the agent talks over an interruption, such as p90=400ms (repeatable)")
 	fs.Float64Var(&o.minReplyRate, "min-reply-rate", 0, "check: share of turns the agent must answer, 0 to 1 (0 disables)")
 	fs.Float64Var(&o.minStopRate, "min-stop-rate", 0, "check: share of interruptions the agent must stop for within --stop-within, 0 to 1 (0 disables)")
+	fs.StringVar(&o.lk.apiKey, "api-key", "", "livekit: API key (default $LIVEKIT_API_KEY)")
+	fs.StringVar(&o.lk.apiSecret, "api-secret", "", "livekit: API secret (default $LIVEKIT_API_SECRET)")
+	fs.StringVar(&o.lk.agentName, "agent-name", "", "livekit: dispatch the agent registered under this name; leave empty for automatic dispatch")
+	fs.StringVar(&o.lk.agentMetadata, "agent-metadata", "", "livekit: metadata for the dispatched agent's job")
+	fs.StringVar(&o.lk.roomPrefix, "room-prefix", "callswarm-", "livekit: prefix for the room each call creates")
+	fs.DurationVar(&o.lk.answerTimeout, "answer-timeout", 30*time.Second, "livekit: how long to wait for the agent to join each call")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(fs.Output(), "Usage: callswarm run <scenario.yaml> --url <ws-url> [flags]\n\n"+
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: callswarm run <scenario.yaml> --url <ws-url> [flags]\n"+
+			"       callswarm run <scenario.yaml> --transport livekit --url <livekit-url> [flags]\n\n"+
+			"With --transport livekit each call joins its own room and --param values\n"+
+			"become the caller's participant attributes.\n\n"+
 			"Exits 0 when every check passes, 3 when a check fails, 1 when the run\n"+
 			"could not be carried out, 2 on a usage error and 130 when cancelled.\n"+
 			"By default a run fails if any call fails or its health is unreliable.\n\nFlags:\n")
@@ -176,6 +206,13 @@ func doRun(ctx context.Context, fs *flag.FlagSet, args []string, o *runOptions, 
 		Parameters:  o.params.m,
 		Metrics:     metrics.Options{StopWithin: o.stopWithin},
 	}
+	if o.transport == "livekit" {
+		quietLiveKit()
+		plan.Dial, err = o.livekitDial()
+		if err != nil {
+			return err
+		}
+	}
 
 	var done, failed atomic.Int64
 	plan.OnCall = func(c load.Call) {
@@ -185,8 +222,8 @@ func doRun(ctx context.Context, fs *flag.FlagSet, args []string, o *runOptions, 
 		}
 	}
 	if !o.quiet {
-		_, _ = fmt.Fprintf(stderr, "running %s: %d calls, up to %d at once, against %s\n",
-			describe(sc), o.calls, o.concurrency, report.RedactURL(o.url))
+		_, _ = fmt.Fprintf(stderr, "running %s: %d calls, up to %d at once, against %s (%s)\n",
+			describe(sc), o.calls, o.concurrency, report.RedactURL(o.url), o.transport)
 		stop := progress(stderr, o.calls, &done, &failed)
 		defer stop()
 	}
@@ -198,6 +235,7 @@ func doRun(ctx context.Context, fs *flag.FlagSet, args []string, o *runOptions, 
 	th := summary.Thresholds{}
 	sum := summary.Summarize(rep, th)
 	man := report.NewManifest(resolveVersion(version), plan, th)
+	man.Transport = o.transport
 	results := check.Evaluate(sum, criteria)
 	if results == nil {
 		results = []check.Result{}
@@ -250,6 +288,29 @@ func (o *runOptions) criteria() check.Criteria {
 }
 
 func (o *runOptions) validate(positional []string) error {
+	if o.transport == "livekit" {
+		if o.url == "" {
+			o.url = os.Getenv("LIVEKIT_URL")
+		}
+		if o.lk.apiKey == "" {
+			o.lk.apiKey = os.Getenv("LIVEKIT_API_KEY")
+		}
+		if o.lk.apiSecret == "" {
+			o.lk.apiSecret = os.Getenv("LIVEKIT_API_SECRET")
+		}
+	}
+	switch {
+	case o.transport != "twilio" && o.transport != "livekit":
+		return usageErrorf("--transport must be twilio or livekit, got %q", o.transport)
+	case o.transport == "livekit" && (o.lk.apiKey == "" || o.lk.apiSecret == ""):
+		return usageErrorf("--transport livekit needs an API key and secret: set LIVEKIT_API_KEY and LIVEKIT_API_SECRET, or --api-key and --api-secret")
+	case o.transport == "livekit" && len(o.headers.h) > 0:
+		return usageErrorf("--header applies only to --transport twilio")
+	case o.transport == "livekit" && o.lk.answerTimeout <= 0:
+		return usageErrorf("--answer-timeout must be positive")
+	case o.transport == "twilio" && (o.lk.agentName != "" || o.lk.agentMetadata != ""):
+		return usageErrorf("--agent-name and --agent-metadata apply only to --transport livekit")
+	}
 	switch {
 	case len(positional) == 0:
 		return usageErrorf("missing scenario file")
@@ -293,6 +354,33 @@ func (o *runOptions) validate(positional []string) error {
 		o.concurrency = o.calls
 	}
 	return nil
+}
+
+// quietLiveKit turns off the LiveKit SDK's logging, which reports every
+// WebRTC state change on stderr. Failures still surface as call errors.
+func quietLiveKit() { lksdk.SetLogger(lklogger.GetDiscardLogger()) }
+
+// livekitDial returns a dialer that puts each call in its own room, named
+// with the prefix, a random run ID and the call number, so runs never share
+// rooms.
+func (o *runOptions) livekitDial() (func(context.Context, int) (transport.Call, error), error) {
+	id := make([]byte, 4)
+	if _, err := rand.Read(id); err != nil {
+		return nil, err
+	}
+	run := hex.EncodeToString(id)
+	return func(ctx context.Context, callID int) (transport.Call, error) {
+		return livekit.Dial(ctx, livekit.Options{
+			URL:           o.url,
+			APIKey:        o.lk.apiKey,
+			APISecret:     o.lk.apiSecret,
+			Room:          fmt.Sprintf("%s%s-%d", o.lk.roomPrefix, run, callID),
+			AgentName:     o.lk.agentName,
+			AgentMetadata: o.lk.agentMetadata,
+			Attributes:    o.params.m,
+			AnswerTimeout: o.lk.answerTimeout,
+		})
+	}, nil
 }
 
 func describe(sc *scenario.Scenario) string {

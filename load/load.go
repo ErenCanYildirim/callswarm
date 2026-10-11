@@ -29,8 +29,13 @@ const DefaultCallTimeout = 5 * time.Minute
 
 // Plan describes a load run.
 type Plan struct {
-	// URL is the agent's Twilio Media Streams WebSocket endpoint.
+	// URL is the agent's endpoint: a Twilio Media Streams WebSocket URL, or
+	// the LiveKit server when Dial connects through LiveKit. It is recorded in
+	// the report.
 	URL string
+	// Dial places one call. Nil dials URL over Twilio Media Streams, with
+	// Header and Parameters. callID numbers calls from 1.
+	Dial func(ctx context.Context, callID int) (transport.Call, error)
 	// Scenario is what every caller does.
 	Scenario *scenario.Scenario
 	// Calls is the total number of calls to make.
@@ -44,7 +49,8 @@ type Plan struct {
 	// Default 5 minutes.
 	CallTimeout time.Duration
 
-	// Header and Parameters are passed to every call; see transport.Options.
+	// Header and Parameters are passed to every Twilio call; see
+	// transport.Options.
 	Header     http.Header
 	Parameters map[string]string
 
@@ -212,17 +218,25 @@ schedule:
 	return rep, nil
 }
 
+// dial places a call with the plan's dialer, or over Twilio by default.
+func (p *Plan) dial(ctx context.Context, id int) (transport.Call, error) {
+	if p.Dial != nil {
+		return p.Dial(ctx, id)
+	}
+	return transport.Dial(ctx, p.URL, transport.Options{
+		CallID:     fmt.Sprintf("%06d", id),
+		Header:     p.Header,
+		Parameters: p.Parameters,
+	})
+}
+
 // runCall makes one call: dial, play the scenario, hang up.
 func runCall(ctx context.Context, p *Plan, c Call) Call {
 	c.Started = time.Now()
 	ctx, cancel := context.WithTimeout(ctx, p.CallTimeout)
 	defer cancel()
 
-	conn, err := transport.Dial(ctx, p.URL, transport.Options{
-		CallID:     fmt.Sprintf("%06d", c.ID),
-		Header:     p.Header,
-		Parameters: p.Parameters,
-	})
+	conn, err := p.dial(ctx, c.ID)
 	if err != nil {
 		c.Err = err
 		c.Ended = time.Now()
